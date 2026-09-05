@@ -27,6 +27,10 @@ def main():
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%H:%M:%S",
+        handlers=[
+            logging.FileHandler("result.log"),
+            logging.StreamHandler()
+        ]
     )
 
     p = argparse.ArgumentParser(
