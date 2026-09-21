@@ -9,6 +9,10 @@ python polymer_ranking.py --mode finetune --csv contrastive_full_paired.csv --ch
 
 python polymer_ranking.py --mode predict --predict_csv new_mol.csv --checkpoint checkpoints/final_model.pt
 
+# hyperparam search
+
+python hyperparam_search.py --stage all --n_trials 10 --max_epochs 40
+
 """
 
 from polymer_ranking.cli import main

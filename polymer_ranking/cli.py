@@ -54,6 +54,22 @@ def main():
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--weight_decay", type=float, default=None)
     p.add_argument("--patience", type=int, default=None)
+    p.add_argument("--rank_weight", type=float, default=None,
+                   help="Weight alpha of the BPR ranking term (default 0.8)")
+    p.add_argument("--reg_weight", type=float, default=None,
+                   help="Weight beta of the delta regression term (default 0.2)")
+    p.add_argument("--censored_weight", type=float, default=None,
+                   help="BPR weight of pairs with a censored value (mobility=0, "
+                        "below the detection limit); default 0.5")
+    p.add_argument("--delta_scale", type=float, default=None,
+                   help="Scale of the regression target; default: std of the measured "
+                        "log10 differences")
+    p.add_argument("--early_stop_metric", choices=["pair_acc", "loss"], default=None,
+                   help="Quantity monitored by early stopping / LR scheduling")
+    p.add_argument("--scheduler", choices=["plateau", "cosine"], default=None,
+                   help="Learning rate scheduler (default plateau)")
+    p.add_argument("--aggregation", choices=["mean", "sum", "norm"], default=None,
+                   help="D-MPNN atom aggregation")
     p.add_argument("--val_ratio", type=float, default=None)
     p.add_argument("--test_ratio", type=float, default=None)
     p.add_argument("--seed", type=int, default=None)
@@ -72,6 +88,7 @@ def main():
                 "dropout": "dropout",
                 "ffn_hidden": "ffn_hidden",
                 "sp3_weight": "sp3_weight",
+                "aggregation": "aggregation",
             })
         train_config = merge_args(
             TrainingConfig, args, {
@@ -85,6 +102,12 @@ def main():
                 "val_ratio": "val_ratio",
                 "test_ratio": "test_ratio",
                 "seed": "seed",
+                "rank_weight": "rank_weight",
+                "reg_weight": "reg_weight",
+                "censored_weight": "censored_weight",
+                "delta_scale": "delta_scale",
+                "early_stop_metric": "early_stop_metric",
+                "scheduler": "scheduler",
             })
         results = train(model_config, train_config)
         logger.info("\n===== Final Test Metrics =====")
@@ -101,6 +124,8 @@ def main():
                 "batch_size": "batch_size",
                 "lr": "finetune_lr",
                 "seed": "seed",
+                "val_ratio": "val_ratio",
+                "patience": "patience",
             })
         results = finetune(finetune_config)
         logger.info(

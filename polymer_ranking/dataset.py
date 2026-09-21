@@ -72,6 +72,11 @@ class _BasePairDataset(Dataset):
         self.y1 = self.df[[f"log_{t}_1" for t in TASK_NAMES]].values.astype(np.float32)
         self.y2 = self.df[[f"log_{t}_2" for t in TASK_NAMES]].values.astype(np.float32)
 
+        # Validity flags: a mobility of 0 means "not measured", such targets must
+        # be masked out of both the loss and the metrics.
+        self.ok1 = self.df[[f"ok_{t}_1" for t in TASK_NAMES]].values.astype(bool)
+        self.ok2 = self.df[[f"ok_{t}_2" for t in TASK_NAMES]].values.astype(bool)
+
     def _ensure_featurized(self):
         if self._graphs1 is not None:
             return
@@ -114,6 +119,8 @@ class PairDataset(_BasePairDataset):
             torch.tensor(self.ef2[idx]),
             torch.tensor(self.y1[idx]),
             torch.tensor(self.y2[idx]),
+            torch.tensor(self.ok1[idx]),
+            torch.tensor(self.ok2[idx]),
         )
 
 
@@ -124,7 +131,7 @@ def collate_fn(batch):
     Flattens all MolGraphs from all samples into a single BatchMolGraph per side,
     and tracks the number of structures per sample (n1s, n2s) for embedding averaging.
     """
-    g1s_list, g2s_list, ef1s, ef2s, y1s, y2s = zip(*batch)
+    g1s_list, g2s_list, ef1s, ef2s, y1s, y2s, ok1s, ok2s = zip(*batch)
 
     all_g1s = []
     all_g2s = []
@@ -151,6 +158,8 @@ def collate_fn(batch):
         torch.stack(ef2s),
         torch.stack(y1s),
         torch.stack(y2s),
+        torch.stack(ok1s),
+        torch.stack(ok2s),
     )
 
 
@@ -193,9 +202,12 @@ class CachedPairDataset(_BasePairDataset):
             ef2_batch = torch.tensor(self.ef2[batch_indices])
             y1_batch = torch.tensor(self.y1[batch_indices])
             y2_batch = torch.tensor(self.y2[batch_indices])
+            ok1_batch = torch.tensor(self.ok1[batch_indices])
+            ok2_batch = torch.tensor(self.ok2[batch_indices])
 
             self._cached_batches.append(
-                (bmg1, n1s, bmg2, n2s, ef1_batch, ef2_batch, y1_batch, y2_batch))
+                (bmg1, n1s, bmg2, n2s, ef1_batch, ef2_batch,
+                 y1_batch, y2_batch, ok1_batch, ok2_batch))
 
         self._graphs1 = None
         self._graphs2 = None

@@ -1,43 +1,43 @@
 # Polymer Carrier Mobility Prediction
 
-基于 D-MPNN 与贝叶斯个性化排序 (BPR) 的聚合物载流子迁移率对比预测模型。给定一对聚合物，模型同时预测电子迁移率 (μ_e) 和空穴迁移率 (μ_h) 的相对高低。
+Contrastive prediction of polymer carrier mobility based on D-MPNN and Bayesian Personalized Ranking (BPR). Given a pair of polymers, the model simultaneously predicts the relative order of electron mobility (mu_e) and hole mobility (mu_h).
 
-## Pipeline 概览
+## Pipeline Overview
 
 ```
-MonomerA + MonomerB (含 * 标记)
+MonomerA + MonomerB (with * markers)
         │
         ▼
-  ① 单体拼接 (A+B → 重复单元，处理非对称单体)
+  ① Monomer concatenation (A+B → repeat unit, handles asymmetric monomers)
         │
         ▼
-  ② 重复单元环化 → 环状模型化合物 (标记连接点 CP)
+  ② Repeat unit cyclization → cyclic model compound (connection points marked as CP)
         │
         ▼
-  ③ chemprop v2 D-MPNN 编码 (多结构平均) + 额外特征拼接
+  ③ chemprop v2 D-MPNN encoding (multiple structures averaged) + extra feature concatenation
         │
         ▼
-  ④ BPR 排序损失 + Delta 回归损失
+  ④ BPR ranking loss + delta regression loss
         │
         ▼
-  ⑤ 多任务同时预测 μ_e / μ_h
+  ⑤ Multi-task prediction of mu_e / mu_h
 ```
 
-## 模块说明
+## Modules
 
-| 模块 | 说明 |
-|------|------|
-| `config.py` | 常量定义与配置 dataclass (`ModelConfig`, `TrainingConfig`, `FinetuneConfig`, `PredictConfig`) |
-| `chemistry.py` | 化学预处理：SMILES 规范化、单体拼接、环化、额外特征提取、DataFrame 预处理 |
-| `featurizer.py` | 自定义原子特征化器 (chemprop `MultiHotAtomFeaturizer` + CP 二值特征) 及工厂函数 |
-| `dataset.py` | `PairDataset` / `CachedPairDataset` 数据集类及 collate 函数 |
-| `model.py` | `DMPNNEncoder` (chemprop v2 BondMessagePassing) + `PolymerRankingModel` (孪生网络 + FFN) |
-| `loss.py` | `MultiTaskBayesianRankingLoss`：BPR 排序损失 + Delta 回归损失的加权组合 |
-| `training.py` | 训练逻辑：`EarlyStopping`、epoch 运行、指标计算、`train()` / `finetune()` |
-| `predict.py` | 推理逻辑：checkpoint 加载、单对预测 (`predict_pair`)、批量预测 (`predict_batch`) |
-| `cli.py` | 命令行入口，支持 `train` / `finetune` / `predict` 三种模式 |
+| Module | Description |
+|--------|-------------|
+| `config.py` | Constants and configuration dataclasses (`ModelConfig`, `TrainingConfig`, `FinetuneConfig`, `PredictConfig`) |
+| `chemistry.py` | Chemical preprocessing: SMILES canonicalization, monomer concatenation, cyclization, extra feature extraction, DataFrame preprocessing |
+| `featurizer.py` | Custom atom featurizer (chemprop `MultiHotAtomFeaturizer` + CP binary feature) and factory function |
+| `dataset.py` | `PairDataset` / `CachedPairDataset` and collate functions |
+| `model.py` | `DMPNNEncoder` (chemprop v2 `BondMessagePassing`) + `PolymerRankingModel` (siamese network + FFN) |
+| `loss.py` | `MultiTaskBayesianRankingLoss`: weighted BPR ranking loss + delta regression loss |
+| `training.py` | Training logic: `EarlyStopping`, epoch runner, metric computation, `train()` / `finetune()` |
+| `predict.py` | Inference: checkpoint loading, single-pair prediction (`predict_pair`), batch prediction (`predict_batch`) |
+| `cli.py` | Command line entry point with `train` / `finetune` / `predict` modes |
 
-## 依赖
+## Requirements
 
 - Python >= 3.9
 - PyTorch
@@ -48,63 +48,68 @@ MonomerA + MonomerB (含 * 标记)
 - pandas
 - numpy
 
-## 数据格式
+## Data Format
 
-训练 CSV 需包含以下列（以 `_1` / `_2` 后缀区分两个聚合物）：
+The training CSV must contain the following columns (`_1` / `_2` suffixes distinguish the two polymers):
 
-| 列名 | 说明 |
-|------|------|
-| `Materials_1` / `Materials_2` | 聚合物名称 |
-| `MonomerA_1` / `MonomerA_2` | 单体 A 的 SMILES（含 2 个 `*` 标记） |
-| `MonomerB_1` / `MonomerB_2` | 单体 B 的 SMILES（含 2 个 `*` 标记） |
-| `conjugation_{s}` | 共轭性 (linear=1, 其他=0) |
-| `Isomer_{s}` | 异构体标记 |
-| `CentroSymmetry_{s}` | 中心对称性 |
-| `E_LUMO (eV)_{s}` | LUMO 能级 |
-| `E_HOMO (eV)_{s}` | HOMO 能级 |
-| `mu_e_{s}` | 电子迁移率 (原始值，程序内部取 log10) |
-| `mu_h_{s}` | 空穴迁移率 (原始值，程序内部取 log10) |
+| Column | Description |
+|--------|-------------|
+| `Materials_1` / `Materials_2` | Polymer name |
+| `MonomerA_1` / `MonomerA_2` | SMILES of monomer A (with 2 `*` markers) |
+| `MonomerB_1` / `MonomerB_2` | SMILES of monomer B (with 2 `*` markers) |
+| `conjugation_{s}` | Conjugation (linear=1, otherwise=0) |
+| `Isomer_{s}` | Isomer flag |
+| `CentroSymmetry_{s}` | Centrosymmetry flag |
+| `E_LUMO (eV)_{s}` | LUMO level |
+| `E_HOMO (eV)_{s}` | HOMO level |
+| `mu_e_{s}` | Electron mobility (raw value; log10 is applied internally) |
+| `mu_h_{s}` | Hole mobility (raw value; log10 is applied internally) |
 
-其中 `{s}` 为 `1` 或 `2`。
+`{s}` is either `1` or `2`.
 
-### 数据预处理
+### Data Preprocessing
 
-使用 `preprocess.py` 将原始单体数据按 DOI 分组生成配对数据：
+`preprocess.py` groups the raw monomer data by DOI and generates paired data:
 
 ```bash
 python preprocess.py
-# 读取 contrastive_monomer.csv → 输出 contrastive_monomer_paired.csv
+# reads contrastive_monomer.csv → writes contrastive_monomer_paired.csv
 ```
 
-## 使用方法
+## Usage
 
-### 训练
+### Training
 
 ```bash
 python polymer_ranking.py --mode train --csv contrastive_monomer_paired.csv
 ```
 
-可选参数：
+Optional arguments:
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--epochs` | 1000 | 训练轮数 |
-| `--batch_size` | 32 | 批大小 |
-| `--hidden_size` | 300 | D-MPNN 隐藏层维度 |
-| `--depth` | 6 | 消息传递深度 |
-| `--dropout` | 0.1 | Dropout 率 |
-| `--ffn_hidden` | 256 | FFN 隐藏层维度 |
-| `--lr` | 1e-3 | 学习率 |
-| `--weight_decay` | 1e-5 | 权重衰减 |
-| `--patience` | 25 | Early stopping 耐心值 |
-| `--val_ratio` | 0.1 | 验证集比例 |
-| `--test_ratio` | 0.1 | 测试集比例 |
-| `--seed` | 42 | 随机种子 |
-| `--save_dir` | checkpoints | 模型保存目录 |
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--epochs` | 200 | Number of training epochs |
+| `--batch_size` | 32 | Batch size |
+| `--hidden_size` | 256 | D-MPNN hidden dimension |
+| `--depth` | 6 | Message passing depth |
+| `--dropout` | 0.1 | Dropout rate |
+| `--ffn_hidden` | 128 | FFN hidden dimension |
+| `--lr` | 1e-3 | Learning rate |
+| `--weight_decay` | 1e-3 | Weight decay |
+| `--rank_weight` | 0.8 | Weight alpha of the BPR ranking term |
+| `--reg_weight` | 0.2 | Weight beta of the delta regression term |
+| `--delta_scale` | auto | Scale of the regression target (std of the measured log10 differences) |
+| `--early_stop_metric` | pair_acc | Quantity monitored by early stopping (`pair_acc` / `loss`) |
+| `--scheduler` | plateau | LR scheduler (`plateau` / `cosine`) |
+| `--patience` | 30 | Early stopping patience |
+| `--val_ratio` | 0.1 | Validation set ratio |
+| `--test_ratio` | 0.1 | Test set ratio |
+| `--seed` | 42 | Random seed |
+| `--save_dir` | checkpoints | Checkpoint directory |
 
-### 微调
+### Fine-tuning
 
-在已有 checkpoint 基础上使用全量数据微调：
+Fine-tune an existing checkpoint on the full dataset:
 
 ```bash
 python polymer_ranking.py --mode finetune \
@@ -114,9 +119,9 @@ python polymer_ranking.py --mode finetune \
     --finetune_lr 1e-5
 ```
 
-### 预测
+### Prediction
 
-对新聚合物对进行批量预测：
+Batch prediction for new polymer pairs:
 
 ```bash
 python polymer_ranking.py --mode predict \
@@ -125,19 +130,19 @@ python polymer_ranking.py --mode predict \
     --output predictions.csv
 ```
 
-预测输出包含以下列：
+Prediction output columns:
 
-| 列名 | 说明 |
-|------|------|
-| `score_mu_e_1` / `score_mu_e_2` | 两个聚合物的 μ_e 打分 |
-| `score_mu_h_1` / `score_mu_h_2` | 两个聚合物的 μ_h 打分 |
-| `prob_mu_e` / `prob_mu_h` | 排序置信概率 (sigmoid(Δscore)) |
-| `preferred_mu_e` / `preferred_mu_h` | 迁移率更高的聚合物名称 |
+| Column | Description |
+|--------|-------------|
+| `score_mu_e_1` / `score_mu_e_2` | mu_e scores of the two polymers |
+| `score_mu_h_1` / `score_mu_h_2` | mu_h scores of the two polymers |
+| `prob_mu_e` / `prob_mu_h` | Ranking confidence (sigmoid of the score difference) |
+| `preferred_mu_e` / `preferred_mu_h` | Polymer with the higher mobility |
 
-## 模型架构
+## Model Architecture
 
 ```
-SMILES (多结构) ──► D-MPNN ──► 平均嵌入 ──► mol_emb [H]
+SMILES (multiple structures) ──► D-MPNN ──► averaged embedding ──► mol_emb [H]
                                                     │
 extra_features [5] ────────────────────────────────┤
                                                     ▼
@@ -153,21 +158,21 @@ extra_features [5] ────────────────────�
                                          Linear → [score_e, score_h]
 ```
 
-两个聚合物共享同一套参数（孪生网络），每个聚合物可能因非对称单体拼接产生多个环化结构，其 D-MPNN 嵌入在送入 FFN 前取平均。
+The two polymers share one set of parameters (siamese network). A polymer may yield multiple cyclized structures when its monomers are asymmetric; their D-MPNN embeddings are averaged before being fed to the FFN.
 
-## 损失函数
+## Loss Function
 
-对每个任务 t ∈ {μ_e, μ_h}：
+For each task t in {mu_e, mu_h}:
 
-- **BPR 排序损失**：`L_bpr = -log(σ(sign(y1 - y2) · (s1 - s2)))`，最大化正确排序的对数似然
-- **Delta 回归损失**：`L_reg = MSE(s1 - s2, y1 - y2)`，约束打分差与真实差值一致
+- **BPR ranking loss**: `L_bpr = -log(sigma(sign(y1 - y2) · (s1 - s2)))`, maximizing the log-likelihood of the correct ranking.
+- **Delta regression loss**: `L_reg = MSE(s1 - s2, y1 - y2)`, forcing the score difference to match the true difference.
 
-总损失 = Σ_t λ_t · (α · L_bpr_t + β · L_reg_t)，默认 α=0.6, β=0.4。
+Total loss = sum_t lambda_t · (alpha · L_bpr_t + beta · L_reg_t), with alpha=0.6 and beta=0.4 by default.
 
-## 评估指标
+## Metrics
 
-| 指标 | 说明 |
-|------|------|
-| `{task}_pair_acc` | 配对排序准确率 |
-| `{task}_spearman` | Spearman 秩相关系数 |
-| `{task}_avg_prob` | 平均排序置信概率 |
+| Metric | Description |
+|--------|-------------|
+| `{task}_pair_acc` | Pairwise ranking accuracy |
+| `{task}_spearman` | Spearman rank correlation coefficient |
+| `{task}_avg_prob` | Average ranking confidence |

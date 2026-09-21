@@ -142,7 +142,8 @@ def generate_all_connections(smilesA: str, smilesB: str) -> List[str]:
                 if norm:
                     results.add(norm)
 
-    return list(results)
+    # sorted for reproducibility (a set has no stable iteration order)
+    return sorted(results)
 
 
 # ── Cyclization ────────────────────────────────────────────────────────────
@@ -313,6 +314,17 @@ def load_and_preprocess(csv_path: str) -> pd.DataFrame:
 
     for col in target_raw:
         df[f"log_{col}"] = np.log10(df[col].clip(lower=1e-12))
+        # A mobility of 0 means "not measured" in this dataset, not a real value.
+        # Such entries must not supervise training, so an explicit validity flag
+        # (ok_{task}_{side}) is stored and consumed by the loss / metrics.
+        df[f"ok_{col}"] = df[col] > 0
+
+    for t in TASK_NAMES:
+        both = df[f"ok_{t}_1"] & df[f"ok_{t}_2"]
+        logger.info(
+            f"{t}: {int(both.sum())}/{len(df)} pairs ({100 * both.mean():.1f}%) "
+            f"have both mobilities measured"
+        )
 
     logger.info(f"Preprocessed dataset: {len(df)} valid pairs")
     return df

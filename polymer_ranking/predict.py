@@ -53,6 +53,8 @@ def predict_pair(
     extra_raw_1: np.ndarray,
     extra_raw_2: np.ndarray,
     checkpoint_path: str,
+    model: Optional[PolymerRankingModel] = None,
+    scaler: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Predict electron/hole mobility ranking for a single new structure pair.
@@ -63,8 +65,12 @@ def predict_pair(
         Monomer SMILES with '*' markers.
     extra_raw_1/2 : np.ndarray shape [5]
         [conjugation, isomer, centrosymmetry, E_LUMO(eV), E_HOMO(eV)]
+    model, scaler : optional
+        Pass an already loaded model/scaler to avoid reloading the checkpoint on
+        every call (important when predicting many pairs one by one).
     """
-    model_config, scaler, model = load_checkpoint(checkpoint_path)
+    if model is None or scaler is None:
+        _, scaler, model = load_checkpoint(checkpoint_path)
     featurizer = create_featurizer()
 
     results1 = generate_cyclized_from_monomers(monomerA_1, monomerB_1)
