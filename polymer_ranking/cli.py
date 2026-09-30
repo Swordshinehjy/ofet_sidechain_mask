@@ -72,6 +72,10 @@ def main():
                    help="D-MPNN atom aggregation")
     p.add_argument("--val_ratio", type=float, default=None)
     p.add_argument("--test_ratio", type=float, default=None)
+    p.add_argument("--split_method", choices=["random", "group"], default=None,
+                   help="random: pair-level split; group: split by paper (doi) "
+                        "so pairs from the same study never cross train/test "
+                        "(model saved as best_model_group.safetensors)")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--finetune_epochs",
                    type=int,
@@ -101,6 +105,7 @@ def main():
                 "patience": "patience",
                 "val_ratio": "val_ratio",
                 "test_ratio": "test_ratio",
+                "split_method": "split_method",
                 "seed": "seed",
                 "rank_weight": "rank_weight",
                 "reg_weight": "reg_weight",

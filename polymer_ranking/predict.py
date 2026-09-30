@@ -1,7 +1,7 @@
 """Prediction logic: checkpoint loading, single pair prediction, batch prediction."""
 
 import logging
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, List
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,8 @@ except ImportError as e:
         "chemprop>=2.0.0 is required. Install with: pip install chemprop>=2.0.0"
     ) from e
 
-from .config import ModelConfig, TASK_NAMES
+from .config import TASK_NAMES
+from .checkpoint import load_checkpoint  # re-exported for training.py
 from .model import PolymerRankingModel
 from .featurizer import create_featurizer
 from .chemistry import (
@@ -25,23 +26,6 @@ from .chemistry import (
 
 logger = logging.getLogger(__name__)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-def load_checkpoint(
-    checkpoint_path: str,
-) -> Tuple[ModelConfig, Any, PolymerRankingModel]:
-    """
-    Load checkpoint, returns (model_config, scaler, model).
-    """
-    ckpt = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)
-    model_config = ModelConfig.from_dict(ckpt["config"])
-    scaler = ckpt["scaler"]
-
-    model = PolymerRankingModel(**model_config.to_dict()).to(DEVICE)
-    model.load_state_dict(ckpt["model_state"])
-    model.eval()
-
-    return model_config, scaler, model
 
 
 @torch.no_grad()

@@ -88,7 +88,6 @@ class DMPNNEncoder(nn.Module):
     def __init__(self,
                  hidden_size: int = 300,
                  depth: int = 6,
-                 dropout: float = 0.1,
                  aggregation: str = "mean",
                  d_v: Optional[int] = None,
                  d_e: Optional[int] = None,
@@ -101,13 +100,15 @@ class DMPNNEncoder(nn.Module):
 
         if d_v is None or d_e is None:
             d_v, d_e = get_feature_dims()
-
+        # Message passing layer uses dropout=0.0: random edge/feature zeroing
+        # during iterative message passing breaks graph topology connectivity.
+        # Dropout is applied only in the FFN prediction head.
         self.mpnn = WeightedBondMessagePassing(
             d_v=d_v,
             d_e=d_e,
             d_h=hidden_size,
             depth=depth,
-            dropout=dropout,
+            dropout=0.0,
             sp3_weight=sp3_weight,
         )
         if aggregation == "mean":
@@ -150,7 +151,7 @@ class PolymerRankingModel(nn.Module):
     ):
         super().__init__()
         self.mpnn = DMPNNEncoder(
-            hidden_size, depth, dropout, aggregation, sp3_weight=sp3_weight
+            hidden_size, depth, aggregation, sp3_weight=sp3_weight
         )
 
         ffn_in = hidden_size + extra_dim

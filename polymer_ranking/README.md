@@ -114,7 +114,7 @@ Fine-tune an existing checkpoint on the full dataset:
 ```bash
 python polymer_ranking.py --mode finetune \
     --csv contrastive_monomer_paired.csv \
-    --checkpoint checkpoints/best_model.pt \
+    --checkpoint checkpoints/best_model.safetensors \
     --finetune_epochs 10 \
     --finetune_lr 1e-5
 ```
@@ -126,7 +126,7 @@ Batch prediction for new polymer pairs:
 ```bash
 python polymer_ranking.py --mode predict \
     --predict_csv new_mol.csv \
-    --checkpoint checkpoints/final_model.pt \
+    --checkpoint checkpoints/final_model.safetensors \
     --output predictions.csv
 ```
 

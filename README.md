@@ -21,7 +21,11 @@ Monomer A + Monomer B ──► monomer concatenation (repeat unit) ──► cy
 ### Note
 
 - **The candidate space is derived from the known chemical space, not entirely new chemistry.** The new structures to be evaluated are basically variants of alkyl chains, substituents, and functional groups with known skeletons, sharing the same chemical family as the training materials. If it is a completely new molecule different from the known system, the model performance will inevitably drop.
-- **Training data comes from literature values with high noise.** Due to the generally high noise in experimental material data, it is recommended to repeat the hold-out method multiple times and then average the results.
+- **The literature data are extremely noisy** Random pair
+  splitting re-uses materials across train/test, leading to data leakage. When re-evaluated with a
+  leakage-free group split (groups by `doi`, so all pairs from the same paper stay in the same
+  split), the honestly measured model metrics are poor: only slightly better than a random ordering.
+  *Treat every reported performance in literature data with great caution.*
 
 ## Project Structure
 
@@ -110,7 +114,7 @@ Fine-tune the best model on the full dataset:
 ```bash
 python polymer_ranking.py --mode finetune \
     --csv contrastive_monomer_paired.csv \
-    --checkpoint checkpoints/best_model.pt \
+    --checkpoint checkpoints/best_model.safetensors \
     --finetune_epochs 10 \
     --finetune_lr 1e-5
 ```
@@ -122,7 +126,7 @@ Predict mobility ranking for new molecule pairs:
 ```bash
 python polymer_ranking.py --mode predict \
     --predict_csv new_mol.csv \
-    --checkpoint checkpoints/final_model.pt \
+    --checkpoint checkpoints/final_model.safetensors \
     --output predictions.csv
 ```
 
@@ -226,6 +230,6 @@ Results are written to `hyperparam_search.csv` and `best_hyperparams.json`.
 
 ## Output
 
-- **Training**: `checkpoints/best_model.pt` — best model on the validation set.
-- **Fine-tuning**: `checkpoints/final_model.pt` — model fine-tuned on the full dataset.
+- **Training**: `checkpoints/best_model.safetensors` — best model on the validation set.
+- **Fine-tuning**: `checkpoints/final_model.safetensors` — model fine-tuned on the full dataset.
 - **Prediction**: `predictions.csv` — predicted scores, ranking probabilities and preferred polymer for each pair.

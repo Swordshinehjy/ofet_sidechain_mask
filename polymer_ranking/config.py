@@ -20,7 +20,12 @@ CP_FEATURE_DIM = 1
 # Configuration dataclasses
 @dataclass
 class ModelConfig:
-    """Model architecture configuration"""
+    """Model architecture configuration
+
+    Defaults are sized for the group (doi) split: with ~1.3k training pairs a
+    256/6 model (~215k params) memorizes the training papers (val loss rises
+    after ~epoch 20), so the default is a ~65k-param model with more dropout.
+    """
     hidden_size: int = 256
     depth: int = 6
     dropout: float = 0.1
@@ -53,6 +58,9 @@ class TrainingConfig:
     patience: int = 30
     val_ratio: float = 0.1
     test_ratio: float = 0.1
+    # "random": pair-level random split; "group": split by paper (doi), so pairs
+    # from the same study never cross train/val/test (no paper-level leakage)
+    split_method: str = "random"          # "random" | "group"
     seed: int = 42
     # loss weighting: the ranking term is the actual objective, the delta
     # regression term is only a regularizer on the score scale
@@ -74,6 +82,10 @@ class TrainingConfig:
             raise ValueError(
                 f"val_ratio must be in [0, {1 - self.test_ratio:.2f}), got {self.val_ratio}"
             )
+        if self.split_method not in ("random", "group"):
+            raise ValueError(
+                f"split_method must be 'random' or 'group', got {self.split_method}"
+            )
         if self.early_stop_metric not in ("pair_acc", "loss"):
             raise ValueError(
                 f"early_stop_metric must be 'pair_acc' or 'loss', got {self.early_stop_metric}"
@@ -88,7 +100,7 @@ class TrainingConfig:
 class FinetuneConfig:
     """Fine-tuning configuration"""
     csv_path: str = "contrastive_paired.csv"
-    checkpoint_path: str = "checkpoints/best_model.pt"
+    checkpoint_path: str = "checkpoints/best_model.safetensors"
     save_dir: str = "checkpoints"
     finetune_epochs: int = 20
     batch_size: int = 32
@@ -104,6 +116,6 @@ class FinetuneConfig:
 class PredictConfig:
     """Prediction configuration"""
     predict_csv: str = ""
-    checkpoint_path: str = "checkpoints/best_model.pt"
+    checkpoint_path: str = "checkpoints/best_model.safetensors"
     output_path: str = "predictions.csv"
     batch_size: int = 32

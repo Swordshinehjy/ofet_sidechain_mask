@@ -11,10 +11,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GroupShuffleSplit
 from scipy.stats import spearmanr
 
 from .config import ModelConfig, TrainingConfig, FinetuneConfig, TASK_NAMES
+from .checkpoint import save_checkpoint
 from .model import PolymerRankingModel
 from .loss import MultiTaskBayesianRankingLoss
 from .dataset import PairDataset, CachedPairDataset, collate_fn, collate_cached_batch
@@ -79,14 +80,48 @@ def compute_delta_scale(y1: np.ndarray, y2: np.ndarray, ok: np.ndarray) -> float
 
 
 def prepare_splits(df, cfg: TrainingConfig) -> Dict[str, Any]:
-    """Build train/val/test datasets and loaders for a preprocessed DataFrame."""
-    idx = np.arange(len(df))
-    tr_idx, te_idx = train_test_split(idx,
-                                      test_size=cfg.test_ratio,
-                                      random_state=cfg.seed)
-    tr_idx, va_idx = train_test_split(tr_idx,
-                                      test_size=cfg.val_ratio / (1 - cfg.test_ratio),
-                                      random_state=cfg.seed)
+    """Build train/val/test datasets and loaders for a preprocessed DataFrame.
+
+    split_method:
+      - "random": pair-level random split (default).
+      - "group":  split by paper (``doi`` column). All pairs from the same
+        publication fall into exactly one of train/val/test, so the test
+        metrics reflect generalization to *unseen papers* rather than
+        interpolation within papers already seen.
+    """
+    if cfg.split_method == "group":
+        if "doi" not in df.columns:
+            raise ValueError(
+                "split_method='group' requires a 'doi' column in the CSV"
+            )
+        groups = df["doi"].astype(str).values
+
+        gss_te = GroupShuffleSplit(n_splits=1, test_size=cfg.test_ratio,
+                                   random_state=cfg.seed)
+        tr_idx, te_idx = next(gss_te.split(df, groups=groups))
+
+        gss_va = GroupShuffleSplit(
+            n_splits=1,
+            test_size=cfg.val_ratio / (1 - cfg.test_ratio),
+            random_state=cfg.seed,
+        )
+        tr_sub, va_sub = next(gss_va.split(df.iloc[tr_idx], groups=groups[tr_idx]))
+        tr_idx, va_idx = tr_idx[tr_sub], tr_idx[va_sub]
+
+        logger.info(
+            f"Group split by doi: "
+            f"{df.iloc[tr_idx]['doi'].nunique()}/"
+            f"{df.iloc[va_idx]['doi'].nunique()}/"
+            f"{df.iloc[te_idx]['doi'].nunique()} unique papers in train/val/test"
+        )
+    else:
+        idx = np.arange(len(df))
+        tr_idx, te_idx = train_test_split(idx,
+                                          test_size=cfg.test_ratio,
+                                          random_state=cfg.seed)
+        tr_idx, va_idx = train_test_split(tr_idx,
+                                          test_size=cfg.val_ratio / (1 - cfg.test_ratio),
+                                          random_state=cfg.seed)
 
     tr_ds = PairDataset(df.iloc[tr_idx], fit_scaler=True)
     va_ds = CachedPairDataset(df.iloc[va_idx], cfg.batch_size, scaler=tr_ds.scaler)
@@ -404,21 +439,22 @@ def train(
     for k, v in te_met.items():
         logger.info(f"  {k:25s}: {v:.4f}")
 
-    ckpt_path = Path(cfg.save_dir) / "best_model.pt"
-    torch.save(
-        {
-            "model_state": model.state_dict(),
-            "scaler": splits["scaler"],
-            "config": mcfg.to_dict(),
+    ckpt_name = ("best_model_group.safetensors" if cfg.split_method == "group"
+                 else "best_model.safetensors")
+    ckpt_path = save_checkpoint(
+        Path(cfg.save_dir) / ckpt_name,
+        model_state=model.state_dict(),
+        scaler=splits["scaler"],
+        config=mcfg.to_dict(),
+        extra={
             "delta_scale": splits["delta_scale"],
+            "split_method": cfg.split_method,
             "train_config": {
                 "rank_weight": cfg.rank_weight,
                 "reg_weight": cfg.reg_weight,
             },
         },
-        ckpt_path,
     )
-    logger.info(f"Checkpoint saved -> {ckpt_path}")
 
     return {
         "test_metrics": te_met,
@@ -509,16 +545,15 @@ def finetune(config: FinetuneConfig) -> Dict[str, Any]:
     if stopper.best_state:
         model.load_state_dict({k: v.to(DEVICE) for k, v in stopper.best_state.items()})
 
-    final_ckpt_path = Path(config.save_dir) / "final_model.pt"
-    torch.save(
-        {
-            "model_state": model.state_dict(),
-            "scaler": scaler,
-            "config": model_config.to_dict(),
+    final_ckpt_path = save_checkpoint(
+        Path(config.save_dir) / "final_model.safetensors",
+        model_state=model.state_dict(),
+        scaler=scaler,
+        config=model_config.to_dict(),
+        extra={
             "delta_scale": delta_scale,
             "finetune_history": history,
         },
-        final_ckpt_path,
     )
     logger.info(f"Final model saved -> {final_ckpt_path}")
 
