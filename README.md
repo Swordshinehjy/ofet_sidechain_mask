@@ -233,3 +233,7 @@ Results are written to `hyperparam_search.csv` and `best_hyperparams.json`.
 - **Training**: `checkpoints/best_model.safetensors` — best model on the validation set.
 - **Fine-tuning**: `checkpoints/final_model.safetensors` — model fine-tuned on the full dataset.
 - **Prediction**: `predictions.csv` — predicted scores, ranking probabilities and preferred polymer for each pair.
+
+Checkpoints are `.safetensors` only (no pickle). The legacy `.pt` pickle format
+and the one-time `convert_checkpoints.py` migration script have been removed;
+load only safetensors checkpoints.
