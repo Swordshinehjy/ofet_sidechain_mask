@@ -9,9 +9,6 @@ All non-tensor state is stored as JSON metadata inside the same file:
 - metadata ``scaler.<attr>`` : StandardScaler state as JSON — ``mean_`` /
   ``var_`` / ``scale_`` arrays as JSON lists (float64 exact round-trip),
   plus ``n_features_in_`` / ``n_samples_seen_`` integer attributes
-
-Legacy `.pt` checkpoints (torch.save pickle) are still readable via
-`load_checkpoint_dict`, but new saves always use safetensors.
 """
 
 import json
@@ -83,14 +80,8 @@ def save_checkpoint(
 
 
 def load_checkpoint_dict(checkpoint_path: str) -> Dict[str, Any]:
-    """Load a checkpoint into a plain dict (weights on CPU).
-
-    Supports both `.safetensors` and legacy `.pt` (own training artifacts).
-    """
+    """Load a `.safetensors` checkpoint into a plain dict (weights on CPU)."""
     p = Path(checkpoint_path)
-    if p.suffix == ".pt":  # legacy pickle checkpoint
-        return torch.load(p, map_location="cpu", weights_only=False)
-
     model_state: Dict[str, torch.Tensor] = {}
     with safe_open(str(p), framework="pt", device="cpu") as f:
         meta = f.metadata() or {}

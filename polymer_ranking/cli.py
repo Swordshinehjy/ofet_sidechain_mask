@@ -1,7 +1,11 @@
 """CLI entry point."""
 
-import logging
 import argparse
+import json
+import logging
+from pathlib import Path
+from dataclasses import asdict
+from typing import Any, Dict, Optional
 
 import pandas as pd
 
@@ -20,6 +24,53 @@ def merge_args(config_cls, args, arg_mapping: dict):
         if arg_val is not None:
             kwargs[config_field] = arg_val
     return config_cls(**kwargs)
+
+
+def load_hyperparams(path: Optional[str]) -> Dict[str, Any]:
+    """Load best-hyperparameter overrides from a JSON file if it exists.
+
+    Returns a dict of overrides (callers only apply the keys that are valid
+    fields of the target config). Returns ``{}`` when the file is missing or
+    unreadable, so the caller falls back to dataclass defaults + CLI args.
+    """
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.is_file():
+        logger.info("Hyper-parameter file %s not found; using defaults.", path)
+        return {}
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("Could not parse hyper-parameter file %s: %s", path, e)
+        return {}
+    logger.info("Loaded hyper-parameters from %s", path)
+    return data
+
+
+def build_config(
+    config_cls,
+    args,
+    arg_mapping: dict,
+    hp_overrides: Dict[str, Any],
+):
+    """Build a config dataclass.
+
+    Precedence (highest first): explicit CLI args > best_hyperparams.json >
+    dataclass defaults.
+    """
+    valid = set(config_cls.__dataclass_fields__)
+    merged = {k: v for k, v in hp_overrides.items() if k in valid}
+    for config_field, arg_name in arg_mapping.items():
+        val = getattr(args, arg_name, None)
+        if val is not None:
+            merged[config_field] = val
+    return config_cls(**merged)
+
+
+def _format_config(cfg) -> str:
+    return json.dumps(asdict(cfg), indent=2, default=str)
 
 
 def main():
@@ -82,10 +133,14 @@ def main():
                    default=None,
                    help="Fine-tuning epoch count")
     p.add_argument("--finetune_lr", type=float, default=None, help="Fine-tuning learning rate")
+    p.add_argument("--hyperparams", type=str, default="best_hyperparams.json",
+                   help="Best hyper-parameter JSON from hyperparam_search.py; used "
+                        "automatically when present, explicit CLI args still override it")
     args = p.parse_args()
 
     if args.mode == "train":
-        model_config = merge_args(
+        hp = load_hyperparams(args.hyperparams)
+        model_config = build_config(
             ModelConfig, args, {
                 "hidden_size": "hidden_size",
                 "depth": "depth",
@@ -93,8 +148,8 @@ def main():
                 "ffn_hidden": "ffn_hidden",
                 "sp3_weight": "sp3_weight",
                 "aggregation": "aggregation",
-            })
-        train_config = merge_args(
+            }, hp)
+        train_config = build_config(
             TrainingConfig, args, {
                 "csv_path": "csv",
                 "save_dir": "save_dir",
@@ -113,7 +168,9 @@ def main():
                 "delta_scale": "delta_scale",
                 "early_stop_metric": "early_stop_metric",
                 "scheduler": "scheduler",
-            })
+            }, hp)
+        logger.info("Model configuration:\n%s", _format_config(model_config))
+        logger.info("Training configuration:\n%s", _format_config(train_config))
         results = train(model_config, train_config)
         logger.info("\n===== Final Test Metrics =====")
         for k, v in results["test_metrics"].items():
