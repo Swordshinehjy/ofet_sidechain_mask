@@ -62,7 +62,8 @@ def save_checkpoint(
     if config is not None:
         meta["config"] = json.dumps(config, default=_json_default)
     for key, value in (extra or {}).items():
-        meta[f"{_EXTRA_PREFIX}{key}"] = json.dumps(value, default=_json_default)
+        meta[f"{_EXTRA_PREFIX}{key}"] = json.dumps(value,
+                                                   default=_json_default)
     if scaler is not None:
         for attr in _SCALER_ARRAYS:
             meta[f"{_SCALER_PREFIX}{attr}"] = json.dumps(
@@ -99,19 +100,41 @@ def load_checkpoint_dict(checkpoint_path: str) -> Dict[str, Any]:
     if f"{_SCALER_PREFIX}mean_" in meta:
         scaler = StandardScaler()
         for attr in _SCALER_ARRAYS:
-            setattr(scaler, attr,
-                    np.asarray(json.loads(meta[f"{_SCALER_PREFIX}{attr}"]),
-                               dtype=np.float64))
-        scaler.n_features_in_ = int(json.loads(meta[f"{_SCALER_PREFIX}n_features_in_"]))
+            setattr(
+                scaler, attr,
+                np.asarray(json.loads(meta[f"{_SCALER_PREFIX}{attr}"]),
+                           dtype=np.float64))
+        scaler.n_features_in_ = int(
+            json.loads(meta[f"{_SCALER_PREFIX}n_features_in_"]))
         n_seen = json.loads(meta[f"{_SCALER_PREFIX}n_samples_seen_"])
-        scaler.n_samples_seen_ = np.asarray(n_seen) if isinstance(n_seen, list) else n_seen
+        scaler.n_samples_seen_ = np.asarray(n_seen) if isinstance(
+            n_seen, list) else n_seen
         ckpt["scaler"] = scaler
     return ckpt
 
 
+def load_checkpoint_extras(checkpoint_path: str) -> Dict[str, Any]:
+    """Read only the JSON metadata of a checkpoint (no model is built).
+
+    Returns a dict with the optional ``config`` key plus every ``extra.*``
+    entry (e.g. ``delta_scale``, ``split_method``, ``train_config``) already
+    JSON-decoded. Used by fine-tuning to reuse the training state without
+    paying for a second model construction.
+    """
+    p = Path(checkpoint_path)
+    extras: Dict[str, Any] = {}
+    with safe_open(str(p), framework="pt", device="cpu") as f:
+        meta = f.metadata() or {}
+    if "config" in meta:
+        extras["config"] = json.loads(meta["config"])
+    for mk, mv in meta.items():
+        if mk.startswith(_EXTRA_PREFIX):
+            extras[mk[len(_EXTRA_PREFIX):]] = json.loads(mv)
+    return extras
+
+
 def load_checkpoint(
-    checkpoint_path: str,
-) -> Tuple[ModelConfig, Any, PolymerRankingModel]:
+    checkpoint_path: str, ) -> Tuple[ModelConfig, Any, PolymerRankingModel]:
     """Load a checkpoint, returns (model_config, scaler, model)."""
     ckpt = load_checkpoint_dict(checkpoint_path)
     model_config = ModelConfig.from_dict(ckpt["config"])

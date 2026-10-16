@@ -7,9 +7,10 @@ Each polymer is rendered as a 2D structure where
   another color.
 
 The side-chain criterion is exactly the one used by
-``polymer_ranking/featurizer.py::compute_edge_weights`` (non-ring sp3 carbon),
-so the picture shows which part of the molecule is actually down-weighted by
-``sp3_weight`` during message passing.
+``polymer_ranking/featurizer.py::compute_edge_weights`` (non-ring sp3 carbon
+without halogen substituents; halogenated groups such as CF3/SCF3 stay on the
+backbone), so the picture shows which part of the molecule is actually
+down-weighted by ``sp3_weight`` during message passing.
 
 Structures are arranged into pages of ``cols x rows`` molecules (4x4 by default)
 and written as PNG files.
@@ -180,7 +181,11 @@ def collect_unique_polymers(df: pd.DataFrame) -> List[Dict]:
 
 def _repeat_unit_from_monomers(entry: Dict) -> Optional[Chem.Mol]:
     """Fallback: concatenate A+B into a repeat unit (still carries two '*')."""
-    from polymer_ranking.chemistry import generate_all_connections
+    from polymer_ranking.chemistry import generate_all_connections, is_homocoupling
+
+    # Homocoupling (A == B): the repeat unit is the monomer itself, not an A+A' dimer
+    if is_homocoupling(entry["monomer_a"], entry["monomer_b"]):
+        return Chem.MolFromSmiles(entry["monomer_a"])
 
     for smi in generate_all_connections(entry["monomer_a"], entry["monomer_b"]):
         mol = Chem.MolFromSmiles(smi)
@@ -211,15 +216,18 @@ def build_mol(entry: Dict, mode: str) -> Optional[Chem.Mol]:
 def classify(mol: Chem.Mol) -> Tuple[List[int], List[int], List[int]]:
     """Split atoms/bonds into side chain and backbone.
 
-    Side chain = non-ring sp3 carbon and every bond touching it (identical to the
-    ``touches_sidechain_sp3`` rule used for the D-MPNN edge weights).
+    Side chain = non-ring sp3 carbon without halogen neighbors and every bond
+    touching it (identical to the ``touches_sidechain_sp3`` rule used for the
+    D-MPNN edge weights; halogenated sp3 carbons like CF3 stay on the backbone).
     """
+    halogens = {"F", "Cl", "Br", "I"}
     side_atoms = [
         a.GetIdx()
         for a in mol.GetAtoms()
         if a.GetSymbol() == "C"
         and a.GetHybridization() == Chem.HybridizationType.SP3
         and not a.IsInRing()
+        and not any(n.GetSymbol() in halogens for n in a.GetNeighbors())
     ]
     side_set = set(side_atoms)
 
@@ -358,7 +366,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     tiles: List[Image.Image] = []
-    labels: List[str] = []
     skipped = 0
     for i, entry in enumerate(entries, 1):
         mol = build_mol(entry, args.mode)
@@ -376,7 +383,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"[WARN] failed to draw {label}: {exc}")
             skipped += 1
             continue
-        labels.append(label)
         if i % 20 == 0 or i == len(entries):
             print(f"  rendered {len(tiles)}/{len(entries)}")
 

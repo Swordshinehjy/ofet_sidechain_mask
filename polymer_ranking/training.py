@@ -3,7 +3,7 @@
 import copy
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -15,7 +15,7 @@ from sklearn.model_selection import train_test_split, GroupShuffleSplit
 from scipy.stats import spearmanr
 
 from .config import ModelConfig, TrainingConfig, FinetuneConfig, TASK_NAMES
-from .checkpoint import save_checkpoint
+from .checkpoint import save_checkpoint, load_checkpoint_extras
 from .model import PolymerRankingModel
 from .loss import MultiTaskBayesianRankingLoss
 from .dataset import PairDataset, CachedPairDataset, collate_fn, collate_cached_batch
@@ -32,7 +32,10 @@ class EarlyStopping:
     mode="max" -> higher is better (e.g. pairwise accuracy)
     """
 
-    def __init__(self, patience: int = 20, delta: float = 1e-4, mode: str = "min"):
+    def __init__(self,
+                 patience: int = 20,
+                 delta: float = 1e-4,
+                 mode: str = "min"):
         if mode not in ("min", "max"):
             raise ValueError(f"mode must be 'min' or 'max', got {mode}")
         self.patience = patience
@@ -54,19 +57,43 @@ class EarlyStopping:
             self.best_loss = value
             self.counter = 0
             self.best_state = {
-                k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+                k: v.detach().cpu().clone()
+                for k, v in model.state_dict().items()
             }
         else:
             self.counter += 1
         return self.counter >= self.patience
 
 
-def compute_delta_scale(y1: np.ndarray, y2: np.ndarray, ok: np.ndarray) -> float:
-    """Standard deviation of the measured log10 mobility differences.
+def compute_delta_scales(y1: np.ndarray, y2: np.ndarray,
+                         ok: np.ndarray) -> List[float]:
+    """Per-task standard deviation of the measured log10 mobility differences.
 
     Used to normalize the delta regression target so that it stays in the same
     order of magnitude as the BPR term. Samples with a missing mobility are
-    excluded.
+    excluded. The two tasks have different spreads (mu_e ≈ 0.97, mu_h ≈ 1.13
+    on the current data), so a single global value would systematically
+    under-scale one of them.
+
+    Returns one value per task, in ``TASK_NAMES`` order (1.0 when a task has no
+    usable pair).
+    """
+    scales: List[float] = []
+    for t in range(ok.shape[1]):
+        m = ok[:, t]
+        if not m.any():
+            scales.append(1.0)
+            continue
+        s = float(np.std(y1[m, t] - y2[m, t]))
+        scales.append(s if s > 1e-6 else 1.0)
+    return scales
+
+
+def compute_delta_scale(y1: np.ndarray, y2: np.ndarray, ok: np.ndarray) -> float:
+    """Global (pooled over tasks) std of the measured log10 differences.
+
+    Kept for reporting / backwards compatibility; training now uses
+    :func:`compute_delta_scales`, which estimates one scale per task.
     """
     diffs = []
     for t in range(ok.shape[1]):
@@ -92,11 +119,11 @@ def prepare_splits(df, cfg: TrainingConfig) -> Dict[str, Any]:
     if cfg.split_method == "group":
         if "doi" not in df.columns:
             raise ValueError(
-                "split_method='group' requires a 'doi' column in the CSV"
-            )
+                "split_method='group' requires a 'doi' column in the CSV")
         groups = df["doi"].astype(str).values
 
-        gss_te = GroupShuffleSplit(n_splits=1, test_size=cfg.test_ratio,
+        gss_te = GroupShuffleSplit(n_splits=1,
+                                   test_size=cfg.test_ratio,
                                    random_state=cfg.seed)
         tr_idx, te_idx = next(gss_te.split(df, groups=groups))
 
@@ -105,7 +132,8 @@ def prepare_splits(df, cfg: TrainingConfig) -> Dict[str, Any]:
             test_size=cfg.val_ratio / (1 - cfg.test_ratio),
             random_state=cfg.seed,
         )
-        tr_sub, va_sub = next(gss_va.split(df.iloc[tr_idx], groups=groups[tr_idx]))
+        tr_sub, va_sub = next(
+            gss_va.split(df.iloc[tr_idx], groups=groups[tr_idx]))
         tr_idx, va_idx = tr_idx[tr_sub], tr_idx[va_sub]
 
         logger.info(
@@ -120,27 +148,46 @@ def prepare_splits(df, cfg: TrainingConfig) -> Dict[str, Any]:
                                           test_size=cfg.test_ratio,
                                           random_state=cfg.seed)
         tr_idx, va_idx = train_test_split(tr_idx,
-                                          test_size=cfg.val_ratio / (1 - cfg.test_ratio),
+                                          test_size=cfg.val_ratio /
+                                          (1 - cfg.test_ratio),
                                           random_state=cfg.seed)
 
     tr_ds = PairDataset(df.iloc[tr_idx], fit_scaler=True)
-    va_ds = CachedPairDataset(df.iloc[va_idx], cfg.batch_size, scaler=tr_ds.scaler)
-    te_ds = CachedPairDataset(df.iloc[te_idx], cfg.batch_size, scaler=tr_ds.scaler)
+    va_ds = CachedPairDataset(df.iloc[va_idx],
+                              cfg.batch_size,
+                              scaler=tr_ds.scaler)
+    te_ds = CachedPairDataset(df.iloc[te_idx],
+                              cfg.batch_size,
+                              scaler=tr_ds.scaler)
 
-    tr_loader = DataLoader(tr_ds, batch_size=cfg.batch_size, shuffle=True,
-                           collate_fn=collate_fn, num_workers=0)
-    va_loader = DataLoader(va_ds, batch_size=1, shuffle=False,
+    tr_loader = DataLoader(tr_ds,
+                           batch_size=cfg.batch_size,
+                           shuffle=True,
+                           collate_fn=collate_fn,
+                           num_workers=0)
+    va_loader = DataLoader(va_ds,
+                           batch_size=1,
+                           shuffle=False,
                            collate_fn=collate_cached_batch)
-    te_loader = DataLoader(te_ds, batch_size=1, shuffle=False,
+    te_loader = DataLoader(te_ds,
+                           batch_size=1,
+                           shuffle=False,
                            collate_fn=collate_cached_batch)
 
     ok = tr_ds.ok1 & tr_ds.ok2
-    delta_scale = cfg.delta_scale or compute_delta_scale(tr_ds.y1, tr_ds.y2, ok)
+    delta_scale = (cfg.delta_scale if cfg.delta_scale is not None
+                   else compute_delta_scales(tr_ds.y1, tr_ds.y2, ok))
+    delta_scale = [float(v) for v in np.atleast_1d(delta_scale)]
 
     return {
-        "tr_ds": tr_ds, "va_ds": va_ds, "te_ds": te_ds,
-        "tr_loader": tr_loader, "va_loader": va_loader, "te_loader": te_loader,
-        "scaler": tr_ds.scaler, "delta_scale": float(delta_scale),
+        "tr_ds": tr_ds,
+        "va_ds": va_ds,
+        "te_ds": te_ds,
+        "tr_loader": tr_loader,
+        "va_loader": va_loader,
+        "te_loader": te_loader,
+        "scaler": tr_ds.scaler,
+        "delta_scale": delta_scale,
         "sizes": (len(tr_ds), len(va_ds.df), len(te_ds.df)),
     }
 
@@ -174,12 +221,16 @@ def _run_epoch(
             ef1, ef2 = ef1.to(DEVICE), ef2.to(DEVICE)
             y1, y2 = y1.to(DEVICE), y2.to(DEVICE)
             ok1, ok2 = ok1.to(DEVICE), ok2.to(DEVICE)
-            valid = ok1 & ok2                       # both measured -> regression
-            rank_valid = (ok1 | ok2) & (y1 != y2)   # ordering decidable -> BPR
+            valid = ok1 & ok2  # both measured -> regression
+            rank_valid = (ok1 | ok2) & (y1 != y2)  # ordering decidable -> BPR
 
             s1, s2 = model(mg1, n1, ef1, mg2, n2, ef2)
-            loss, _ = criterion(s1, s2, y1, y2,
-                                valid=valid, rank_valid=rank_valid)
+            loss, _ = criterion(s1,
+                                s2,
+                                y1,
+                                y2,
+                                valid=valid,
+                                rank_valid=rank_valid)
 
             if training:
                 optimizer.zero_grad()
@@ -211,7 +262,12 @@ def _run_epoch(
     )
 
 
-def compute_metrics(s1, s2, y1, y2, valid=None, rank_valid=None) -> Dict[str, float]:
+def compute_metrics(s1,
+                    s2,
+                    y1,
+                    y2,
+                    valid=None,
+                    rank_valid=None) -> Dict[str, float]:
     """Compute Pairwise Accuracy, Spearman rho and correct-direction probability.
 
     ``rank_valid`` [N, T] (optional) marks pairs whose ordering is decidable —
@@ -224,6 +280,11 @@ def compute_metrics(s1, s2, y1, y2, valid=None, rank_valid=None) -> Dict[str, fl
 
     ``avg_prob`` is the mean probability assigned to the *correct* direction,
     i.e. it is high only when the ranking is right.
+
+    Spearman rho is computed on the *pairwise differences* ``(s1-s2, y1-y2)``:
+    the model is only supervised on differences, so its absolute score level
+    carries no information and a pooled correlation over raw scores would
+    mostly measure between-pair noise.
     """
     out = {}
     n_tasks = s1.shape[1]
@@ -244,12 +305,12 @@ def compute_metrics(s1, s2, y1, y2, valid=None, rank_valid=None) -> Dict[str, fl
         else:
             v = valid[:, t].astype(bool)
 
-        acc = float((np.sign(dp[mask]) == np.sign(dy[mask])).mean()) if mask.any() else 0.0
+        acc = float((np.sign(dp[mask]) == np.sign(
+            dy[mask])).mean()) if mask.any() else 0.0
 
         if v.sum() >= 3:
-            scores = np.concatenate([s1[v, t], s2[v, t]])
-            targets = np.concatenate([y1[v, t], y2[v, t]])
-            rho, _ = spearmanr(scores, targets)
+            # correlation of predicted vs true *pairwise difference*
+            rho, _ = spearmanr(dp[v], dy[v])
             rho = 0.0 if np.isnan(rho) else float(rho)
         else:
             rho = 0.0
@@ -262,13 +323,24 @@ def compute_metrics(s1, s2, y1, y2, valid=None, rank_valid=None) -> Dict[str, fl
         out[f"{name}_avg_prob"] = prob
         out[f"{name}_n_rank"] = float(mask.sum())
         out[f"{name}_n_reg"] = float(v.sum())
-    out["mean_pair_acc"] = float(np.mean(
-        [out[f"{TASK_NAMES[t]}_pair_acc"] for t in range(min(n_tasks, len(TASK_NAMES)))]))
+    # weighted by the number of decidable pairs: a task with (almost) no
+    # decidable pair must not drag the monitored metric down to 0
+    accs, weights = [], []
+    for t in range(min(n_tasks, len(TASK_NAMES))):
+        accs.append(out[f"{TASK_NAMES[t]}_pair_acc"])
+        weights.append(out[f"{TASK_NAMES[t]}_n_rank"])
+    out["mean_pair_acc"] = float(
+        np.average(accs, weights=weights)) if sum(weights) > 0 else 0.0
     return out
 
 
 def _monitor_value(metrics: Dict[str, float], cfg: TrainingConfig) -> float:
-    """Value used for early stopping / LR scheduling."""
+    """Value used for early stopping / LR scheduling.
+
+    Always *higher is better*: ``pair_acc`` directly, and ``-loss`` when the
+    loss is monitored (so "best" really means "lowest loss"). Both the early
+    stopper and the LR scheduler therefore run in ``mode="max"``.
+    """
     if cfg.early_stop_metric == "pair_acc":
         return metrics["mean_pair_acc"]
     return -metrics.get("loss", 0.0)
@@ -289,8 +361,14 @@ def _build_model(mcfg: ModelConfig) -> PolymerRankingModel:
 
 def _make_scheduler(cfg: TrainingConfig, optimizer):
     if cfg.scheduler == "cosine":
-        return CosineAnnealingLR(optimizer, T_max=cfg.epochs, eta_min=cfg.lr * 1e-2)
-    return ReduceLROnPlateau(optimizer, mode="max", factor=0.5, patience=10, min_lr=1e-6)
+        return CosineAnnealingLR(optimizer,
+                                 T_max=cfg.epochs,
+                                 eta_min=cfg.lr * 1e-2)
+    return ReduceLROnPlateau(optimizer,
+                             mode="max",
+                             factor=0.5,
+                             patience=10,
+                             min_lr=1e-6)
 
 
 def run_experiment(
@@ -317,18 +395,20 @@ def run_experiment(
         delta_scale=splits["delta_scale"],
         censored_weight=cfg.censored_weight,
     )
-    optimizer = AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    optimizer = AdamW(model.parameters(),
+                      lr=cfg.lr,
+                      weight_decay=cfg.weight_decay)
     scheduler = _make_scheduler(cfg, optimizer)
-    stopper = EarlyStopping(
-        patience=cfg.patience,
-        mode="max" if cfg.early_stop_metric == "pair_acc" else "min",
-    )
+    # the monitored value is always "higher is better" -> mode="max"
+    stopper = EarlyStopping(patience=cfg.patience, mode="max")
 
     best_metrics: Dict[str, float] = {}
     best_epoch = 0
     for epoch in range(1, cfg.epochs + 1):
-        tr_loss, *_ = _run_epoch(model, splits["tr_loader"], criterion, optimizer)
-        va_loss, s1, s2, y1, y2, valid, rank_valid = _run_epoch(model, splits["va_loader"], criterion)
+        tr_loss, *_ = _run_epoch(model, splits["tr_loader"], criterion,
+                                 optimizer)
+        va_loss, s1, s2, y1, y2, valid, rank_valid = _run_epoch(
+            model, splits["va_loader"], criterion)
         va_met = compute_metrics(s1, s2, y1, y2, valid, rank_valid)
         va_met["loss"] = va_loss
 
@@ -379,8 +459,14 @@ def train(
     tr_ds, tr_loader = splits["tr_ds"], splits["tr_loader"]
     va_loader, te_loader = splits["va_loader"], splits["te_loader"]
 
-    logger.info(f"Train/Val/Test: {splits['sizes'][0]}/{splits['sizes'][1]}/{splits['sizes'][2]}")
-    logger.info(f"delta_scale (std of measured log10 differences): {splits['delta_scale']:.3f}")
+    logger.info(
+        f"Train/Val/Test: {splits['sizes'][0]}/{splits['sizes'][1]}/{splits['sizes'][2]}"
+    )
+    logger.info(
+        "delta_scale (std of measured log10 differences): "
+        + ", ".join(f"{t}={v:.3f}"
+                    for t, v in zip(TASK_NAMES, splits["delta_scale"]))
+    )
 
     model = _build_model(mcfg)
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -392,18 +478,19 @@ def train(
         delta_scale=splits["delta_scale"],
         censored_weight=cfg.censored_weight,
     )
-    optimizer = AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    optimizer = AdamW(model.parameters(),
+                      lr=cfg.lr,
+                      weight_decay=cfg.weight_decay)
     scheduler = _make_scheduler(cfg, optimizer)
-    stopper = EarlyStopping(
-        patience=cfg.patience,
-        mode="max" if cfg.early_stop_metric == "pair_acc" else "min",
-    )
+    # the monitored value is always "higher is better" -> mode="max"
+    stopper = EarlyStopping(patience=cfg.patience, mode="max")
 
     history = {"train_loss": [], "val_loss": [], "val_metrics": []}
 
     for epoch in range(1, cfg.epochs + 1):
         tr_loss, *_ = _run_epoch(model, tr_loader, criterion, optimizer)
-        va_loss, s1, s2, y1, y2, valid, rank_valid = _run_epoch(model, va_loader, criterion)
+        va_loss, s1, s2, y1, y2, valid, rank_valid = _run_epoch(
+            model, va_loader, criterion)
         va_met = compute_metrics(s1, s2, y1, y2, valid, rank_valid)
         va_met["loss"] = va_loss
 
@@ -426,21 +513,28 @@ def train(
             )
 
         if stopper.step(monitor, model):
-            logger.info(f"Early stopping at epoch {epoch} "
-                        f"(best {cfg.early_stop_metric}={stopper.best_score:.4f})")
+            best_shown = (stopper.best_score if cfg.early_stop_metric == "pair_acc"
+                          else -stopper.best_score)
+            logger.info(
+                f"Early stopping at epoch {epoch} "
+                f"(best {cfg.early_stop_metric}={best_shown:.4f})")
             break
 
     if stopper.best_state:
-        model.load_state_dict({k: v.to(DEVICE) for k, v in stopper.best_state.items()})
+        model.load_state_dict({
+            k: v.to(DEVICE)
+            for k, v in stopper.best_state.items()
+        })
 
-    te_loss, s1, s2, y1, y2, valid, rank_valid = _run_epoch(model, te_loader, criterion)
+    te_loss, s1, s2, y1, y2, valid, rank_valid = _run_epoch(
+        model, te_loader, criterion)
     te_met = compute_metrics(s1, s2, y1, y2, valid, rank_valid)
     logger.info("\n========== Test Results ==========")
     for k, v in te_met.items():
         logger.info(f"  {k:25s}: {v:.4f}")
 
-    ckpt_name = ("best_model_group.safetensors" if cfg.split_method == "group"
-                 else "best_model.safetensors")
+    ckpt_name = ("best_model_group.safetensors"
+                 if cfg.split_method == "group" else "best_model.safetensors")
     ckpt_path = save_checkpoint(
         Path(cfg.save_dir) / ckpt_name,
         model_state=model.state_dict(),
@@ -452,6 +546,7 @@ def train(
             "train_config": {
                 "rank_weight": cfg.rank_weight,
                 "reg_weight": cfg.reg_weight,
+                "censored_weight": cfg.censored_weight,
             },
         },
     )
@@ -473,63 +568,99 @@ def finetune(config: FinetuneConfig) -> Dict[str, Any]:
     torch.manual_seed(config.seed)
     np.random.seed(config.seed)
 
+    # training state persisted with the checkpoint (delta scale / loss weights)
+    ckpt_extras = load_checkpoint_extras(config.checkpoint_path)
     model_config, scaler, model = load_checkpoint(config.checkpoint_path)
+
+    saved_weights = ckpt_extras.get("train_config") or {}
+    for name, value in (("rank_weight", config.rank_weight),
+                        ("reg_weight", config.reg_weight),
+                        ("censored_weight", config.censored_weight)):
+        previous = saved_weights.get(name)
+        if previous is not None and float(previous) != float(value):
+            logger.warning(
+                f"Fine-tuning with {name}={value} but the checkpoint was "
+                f"trained with {name}={previous}")
 
     df = load_and_preprocess(config.csv_path)
     logger.info(f"Full dataset size: {len(df)} pairs")
 
     idx = np.arange(len(df))
     if config.val_ratio > 0:
-        tr_idx, va_idx = train_test_split(idx, test_size=config.val_ratio,
+        tr_idx, va_idx = train_test_split(idx,
+                                          test_size=config.val_ratio,
                                           random_state=config.seed)
     else:
         tr_idx, va_idx = idx, np.array([], dtype=int)
 
     full_ds = PairDataset(df.iloc[tr_idx], scaler=scaler, fit_scaler=False)
-    full_loader = DataLoader(full_ds, batch_size=config.batch_size, shuffle=True,
-                             collate_fn=collate_fn, num_workers=0)
+    full_loader = DataLoader(full_ds,
+                             batch_size=config.batch_size,
+                             shuffle=True,
+                             collate_fn=collate_fn,
+                             num_workers=0)
 
     va_loader = None
     if len(va_idx):
-        va_ds = CachedPairDataset(df.iloc[va_idx], config.batch_size,
-                                  scaler=scaler, fit_scaler=False)
-        va_loader = DataLoader(va_ds, batch_size=1, shuffle=False,
+        va_ds = CachedPairDataset(df.iloc[va_idx],
+                                  config.batch_size,
+                                  scaler=scaler,
+                                  fit_scaler=False)
+        va_loader = DataLoader(va_ds,
+                               batch_size=1,
+                               shuffle=False,
                                collate_fn=collate_cached_batch)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"Model parameters: {n_params:,}")
 
     ok = full_ds.ok1 & full_ds.ok2
-    delta_scale = compute_delta_scale(full_ds.y1, full_ds.y2, ok)
+    # reuse the scale estimated during training; only fall back to the current
+    # subset when the checkpoint does not carry one
+    delta_scale = ckpt_extras.get("delta_scale")
+    if delta_scale is None:
+        delta_scale = compute_delta_scales(full_ds.y1, full_ds.y2, ok)
+        logger.info("No delta_scale in the checkpoint; estimated %s", delta_scale)
+    delta_scale = [float(v) for v in np.atleast_1d(delta_scale)]
 
     criterion = MultiTaskBayesianRankingLoss(
-        rank_weight=0.8, reg_weight=0.2, delta_scale=delta_scale,
-        censored_weight=0.5)
-    optimizer = AdamW(model.parameters(), lr=config.lr,
+        rank_weight=config.rank_weight,
+        reg_weight=config.reg_weight,
+        delta_scale=delta_scale,
+        censored_weight=config.censored_weight,
+    )
+    optimizer = AdamW(model.parameters(),
+                      lr=config.lr,
                       weight_decay=config.weight_decay)
-    scheduler = CosineAnnealingLR(optimizer, T_max=config.finetune_epochs,
+    scheduler = CosineAnnealingLR(optimizer,
+                                  T_max=config.finetune_epochs,
                                   eta_min=config.lr * 0.1)
     stopper = EarlyStopping(patience=config.patience, mode="max")
 
     history = {"train_loss": [], "train_metrics": [], "val_metrics": []}
 
-    logger.info(f"Starting fine-tuning for {config.finetune_epochs} epochs with lr={config.lr}")
+    logger.info(
+        f"Starting fine-tuning for {config.finetune_epochs} epochs with lr={config.lr}"
+    )
     for epoch in range(1, config.finetune_epochs + 1):
-        tr_loss, s1, s2, y1, y2, valid, rank_valid = _run_epoch(model, full_loader, criterion,
-                                                    optimizer)
+        tr_loss, s1, s2, y1, y2, valid, rank_valid = _run_epoch(
+            model, full_loader, criterion, optimizer)
         tr_met = compute_metrics(s1, s2, y1, y2, valid, rank_valid)
         scheduler.step()
 
         history["train_loss"].append(tr_loss)
         history["train_metrics"].append(tr_met)
 
-        msg = (f"Ep {epoch:4d} | loss={tr_loss:.4f} | "
-               f"mu_e acc={tr_met['mu_e_pair_acc']:.3f} rho={tr_met['mu_e_spearman']:.3f} | "
-               f"mu_h acc={tr_met['mu_h_pair_acc']:.3f} rho={tr_met['mu_h_spearman']:.3f}")
+        msg = (
+            f"Ep {epoch:4d} | loss={tr_loss:.4f} | "
+            f"mu_e acc={tr_met['mu_e_pair_acc']:.3f} rho={tr_met['mu_e_spearman']:.3f} | "
+            f"mu_h acc={tr_met['mu_h_pair_acc']:.3f} rho={tr_met['mu_h_spearman']:.3f}"
+        )
 
         monitor = tr_met["mean_pair_acc"]
         if va_loader is not None:
-            _, v1, v2, vy1, vy2, vvalid, vrank = _run_epoch(model, va_loader, criterion)
+            _, v1, v2, vy1, vy2, vvalid, vrank = _run_epoch(
+                model, va_loader, criterion)
             va_met = compute_metrics(v1, v2, vy1, vy2, vvalid, vrank)
             history["val_metrics"].append(va_met)
             monitor = va_met["mean_pair_acc"]
@@ -543,7 +674,10 @@ def finetune(config: FinetuneConfig) -> Dict[str, Any]:
         logger.info(msg)
 
     if stopper.best_state:
-        model.load_state_dict({k: v.to(DEVICE) for k, v in stopper.best_state.items()})
+        model.load_state_dict({
+            k: v.to(DEVICE)
+            for k, v in stopper.best_state.items()
+        })
 
     final_ckpt_path = save_checkpoint(
         Path(config.save_dir) / "final_model.safetensors",
@@ -553,6 +687,11 @@ def finetune(config: FinetuneConfig) -> Dict[str, Any]:
         extra={
             "delta_scale": delta_scale,
             "finetune_history": history,
+            "train_config": {
+                "rank_weight": config.rank_weight,
+                "reg_weight": config.reg_weight,
+                "censored_weight": config.censored_weight,
+            },
         },
     )
     logger.info(f"Final model saved -> {final_ckpt_path}")

@@ -74,23 +74,17 @@ def _format_config(cfg) -> str:
 
 
 def main():
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
-        handlers=[
-            logging.FileHandler("result.log"),
-            logging.StreamHandler()
-        ]
-    )
-
     p = argparse.ArgumentParser(
-        description="Polymer Mobility Bayesian Personalized Ranking (BPR) via D-MPNN")
+        description=
+        "Polymer Mobility Bayesian Personalized Ranking (BPR) via D-MPNN")
     p.add_argument("--mode",
                    choices=["train", "predict", "finetune"],
                    default="train")
     p.add_argument("--csv", type=str, default=None, help="Training CSV path")
-    p.add_argument("--predict_csv", type=str, default=None, help="Prediction CSV path")
+    p.add_argument("--predict_csv",
+                   type=str,
+                   default=None,
+                   help="Prediction CSV path")
     p.add_argument("--output", type=str, default=None)
     p.add_argument("--checkpoint", type=str, default=None)
     p.add_argument("--save_dir", type=str, default=None)
@@ -100,43 +94,89 @@ def main():
     p.add_argument("--depth", type=int, default=None)
     p.add_argument("--dropout", type=float, default=None)
     p.add_argument("--ffn_hidden", type=int, default=None)
-    p.add_argument("--sp3_weight", type=float, default=None,
-                   help="Edge weight for bonds touching sp3 carbons (default 0.2)")
+    p.add_argument(
+        "--sp3_weight",
+        type=float,
+        default=None,
+        help="Edge weight for bonds touching sp3 carbons (default 0.2)")
     p.add_argument("--lr", type=float, default=None)
     p.add_argument("--weight_decay", type=float, default=None)
     p.add_argument("--patience", type=int, default=None)
-    p.add_argument("--rank_weight", type=float, default=None,
+    p.add_argument("--rank_weight",
+                   type=float,
+                   default=None,
                    help="Weight alpha of the BPR ranking term (default 0.8)")
-    p.add_argument("--reg_weight", type=float, default=None,
-                   help="Weight beta of the delta regression term (default 0.2)")
-    p.add_argument("--censored_weight", type=float, default=None,
-                   help="BPR weight of pairs with a censored value (mobility=0, "
-                        "below the detection limit); default 0.5")
-    p.add_argument("--delta_scale", type=float, default=None,
-                   help="Scale of the regression target; default: std of the measured "
-                        "log10 differences")
-    p.add_argument("--early_stop_metric", choices=["pair_acc", "loss"], default=None,
+    p.add_argument(
+        "--reg_weight",
+        type=float,
+        default=None,
+        help="Weight beta of the delta regression term (default 0.2)")
+    p.add_argument(
+        "--censored_weight",
+        type=float,
+        default=None,
+        help="BPR weight of pairs with a censored value (mobility=0, "
+        "below the detection limit); default 0.5")
+    p.add_argument(
+        "--delta_scale",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Scale of the regression target. One value (broadcast to both "
+        "tasks) or two values in TASK_NAMES order (mu_e mu_h); default: std "
+        "of the measured log10 differences, estimated per task")
+    p.add_argument("--early_stop_metric",
+                   choices=["pair_acc", "loss"],
+                   default=None,
                    help="Quantity monitored by early stopping / LR scheduling")
-    p.add_argument("--scheduler", choices=["plateau", "cosine"], default=None,
+    p.add_argument("--scheduler",
+                   choices=["plateau", "cosine"],
+                   default=None,
                    help="Learning rate scheduler (default plateau)")
-    p.add_argument("--aggregation", choices=["mean", "sum", "norm"], default=None,
+    p.add_argument("--aggregation",
+                   choices=["mean", "sum", "norm"],
+                   default=None,
                    help="D-MPNN atom aggregation")
     p.add_argument("--val_ratio", type=float, default=None)
     p.add_argument("--test_ratio", type=float, default=None)
-    p.add_argument("--split_method", choices=["random", "group"], default=None,
-                   help="random: pair-level split; group: split by paper (doi) "
-                        "so pairs from the same study never cross train/test "
-                        "(model saved as best_model_group.safetensors)")
+    p.add_argument(
+        "--split_method",
+        choices=["random", "group"],
+        default=None,
+        help="random: pair-level split; group: split by paper (doi) "
+        "so pairs from the same study never cross train/test "
+        "(model saved as best_model_group.safetensors)")
     p.add_argument("--seed", type=int, default=None)
     p.add_argument("--finetune_epochs",
                    type=int,
                    default=None,
                    help="Fine-tuning epoch count")
-    p.add_argument("--finetune_lr", type=float, default=None, help="Fine-tuning learning rate")
-    p.add_argument("--hyperparams", type=str, default="best_hyperparams.json",
-                   help="Best hyper-parameter JSON from hyperparam_search.py; used "
-                        "automatically when present, explicit CLI args still override it")
+    p.add_argument("--finetune_lr",
+                   type=float,
+                   default=None,
+                   help="Fine-tuning learning rate")
+    p.add_argument(
+        "--hyperparams",
+        type=str,
+        default="best_hyperparams.json",
+        help="Best hyper-parameter JSON from hyperparam_search.py; used "
+        "automatically when present, explicit CLI args still override it")
+    p.add_argument("--log_file",
+                   type=str,
+                   default="result.log",
+                   help="Log file path (default: result.log in the CWD)")
     args = p.parse_args()
+
+    log_handlers: list = [logging.StreamHandler()]
+    try:
+        log_handlers.append(logging.FileHandler(args.log_file, encoding="utf-8"))
+    except OSError as e:  # e.g. read-only CWD -> keep running on stdout only
+        print(f"[WARN] could not open log file {args.log_file}: {e}")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=log_handlers)
 
     if args.mode == "train":
         hp = load_hyperparams(args.hyperparams)
@@ -170,7 +210,8 @@ def main():
                 "scheduler": "scheduler",
             }, hp)
         logger.info("Model configuration:\n%s", _format_config(model_config))
-        logger.info("Training configuration:\n%s", _format_config(train_config))
+        logger.info("Training configuration:\n%s",
+                    _format_config(train_config))
         results = train(model_config, train_config)
         logger.info("\n===== Final Test Metrics =====")
         for k, v in results["test_metrics"].items():
@@ -188,6 +229,9 @@ def main():
                 "seed": "seed",
                 "val_ratio": "val_ratio",
                 "patience": "patience",
+                "rank_weight": "rank_weight",
+                "reg_weight": "reg_weight",
+                "censored_weight": "censored_weight",
             })
         results = finetune(finetune_config)
         logger.info(
@@ -202,6 +246,7 @@ def main():
                 "predict_csv": "predict_csv",
                 "checkpoint_path": "checkpoint",
                 "output_path": "output",
+                "batch_size": "batch_size",
             })
         df_new = pd.read_csv(predict_config.predict_csv)
         result = predict_batch(
@@ -210,4 +255,7 @@ def main():
             output_path=predict_config.output_path,
             batch_size=predict_config.batch_size,
         )
-        logger.info(result[["Materials_1", "Materials_2", "preferred_mu_e", "prob_mu_e", "preferred_mu_h", "prob_mu_h"]])
+        logger.info(result[[
+            "Materials_1", "Materials_2", "preferred_mu_e", "prob_mu_e",
+            "preferred_mu_h", "prob_mu_h"
+        ]])

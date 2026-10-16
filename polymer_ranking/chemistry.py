@@ -11,8 +11,8 @@ from .config import EXTRA_COLS, TASK_NAMES
 
 logger = logging.getLogger(__name__)
 
-
 # ── SMILES helpers ──────────────────────────────────────────────────────────
+
 
 def normalize_smiles(smi: str) -> Optional[str]:
     if not smi:
@@ -22,6 +22,12 @@ def normalize_smiles(smi: str) -> Optional[str]:
         return Chem.MolToSmiles(mol) if mol else None
     except (ValueError, RuntimeError):
         return None
+
+
+def is_homocoupling(smilesA: str, smilesB: str) -> bool:
+    """True if both monomers are the same molecule (homocoupling -> homopolymer)."""
+    norm_a = normalize_smiles(smilesA)
+    return norm_a is not None and norm_a == normalize_smiles(smilesB)
 
 
 def get_star_info(mol) -> List[Tuple[int, int]]:
@@ -40,18 +46,22 @@ def get_star_info(mol) -> List[Tuple[int, int]]:
 
 # ── Monomer concatenation ──────────────────────────────────────────────────
 
-def connect_at_stars(molA, molB, starA: int, nbrA: int, starB: int, nbrB: int) -> Optional[str]:
+
+def connect_at_stars(molA, molB, starA: int, nbrA: int, starB: int,
+                     nbrB: int) -> Optional[str]:
     """
     Connect one '*' from A to one '*' from B, preserving double bond stereochemistry.
     Returns SMILES of the connected molecule (still has 2 '*' atoms), or None on failure.
     """
     try:
+
         def get_stereo_bonds(mol, star_idx):
             stereo_bonds = []
             for bond in mol.GetBonds():
                 if bond.GetBondType() == Chem.BondType.DOUBLE:
                     st = bond.GetStereo()
-                    if st in (Chem.BondStereo.STEREOE, Chem.BondStereo.STEREOZ):
+                    if st in (Chem.BondStereo.STEREOE,
+                              Chem.BondStereo.STEREOZ):
                         st_atoms = list(bond.GetStereoAtoms())
                         if star_idx in st_atoms:
                             u, v = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
@@ -99,7 +109,9 @@ def connect_at_stars(molA, molB, starA: int, nbrA: int, starB: int, nbrB: int) -
 
         for u, v, st, st_atoms in stereoB:
             b = rw.GetBondBetweenAtoms(u + offset, v + offset)
-            new_st_atoms = [nbrA if x == starB else (x + offset) for x in st_atoms]
+            new_st_atoms = [
+                nbrA if x == starB else (x + offset) for x in st_atoms
+            ]
             b.SetStereoAtoms(*new_st_atoms)
             b.SetStereo(st)
 
@@ -122,8 +134,8 @@ def generate_all_connections(smilesA: str, smilesB: str) -> List[str]:
     Each of A and B has (at least) 2 '*' atoms.
     Try every combination of one '*' from A x one '*' from B -> up to 4 products.
     Returns a deduplicated list of canonical SMILES (each still has 2 '*').
-    For symmetric monomers (A==B) this typically yields 1 unique structure;
-    for asymmetric monomers (A!=B) this typically yields 2 unique structures.
+    Only used for alternating copolymers (A != B); the homocoupling case (A == B)
+    is handled separately by generate_cyclized_from_monomers.
     """
     molA = Chem.MolFromSmiles(smilesA)
     molB = Chem.MolFromSmiles(smilesB)
@@ -147,6 +159,7 @@ def generate_all_connections(smilesA: str, smilesB: str) -> List[str]:
 
 
 # ── Cyclization ────────────────────────────────────────────────────────────
+
 
 def cyclize_polymer_with_cp_marking(
         smiles: str) -> Tuple[Optional[str], Optional[Chem.Mol]]:
@@ -234,18 +247,29 @@ def generate_cyclized_from_monomers(
     """
     Generate all possible cyclized structures from two monomers.
 
-    Pipeline:
-      1. Connect monomers A and B at their '*' atoms to form repeat units
-         (using generate_all_connections, which tries all star pair combinations)
-      2. Cyclize each repeat unit by connecting remaining '*' atoms
-      3. Mark connection points
+    Homocoupling (A == B, compared by canonical SMILES):
+      The polymer is a homopolymer ...-A-A-A-..., whose repeat unit is A itself.
+      Cyclize A directly by joining its own two '*' atoms (the head-to-tail
+      connection) and return exactly 1 structure -- no A+A' dimer orientation
+      variants and no averaging over connection cases.
 
-    For symmetric monomers (A==B), typically 1 unique cyclized structure.
-    For asymmetric monomers (A!=B), typically 2 unique cyclized structures
-    (corresponding to the two possible connection orientations).
+    Alternating copolymer (A != B):
+      Pipeline:
+        1. Connect monomers A and B at their '*' atoms to form repeat units
+           (using generate_all_connections, which tries all star pair combinations)
+        2. Cyclize each repeat unit by connecting remaining '*' atoms
+        3. Mark connection points
+      Typically 2 unique cyclized structures (the two connection orientations);
+      their embeddings are averaged downstream.
 
     Returns list of (cyc_smiles, mol_with_cp) tuples.
     """
+    if is_homocoupling(monomerA_smiles, monomerB_smiles):
+        cyc_smi, cyc_mol = cyclize_polymer_with_cp_marking(monomerA_smiles)
+        if cyc_smi is not None and cyc_mol is not None:
+            return [(cyc_smi, cyc_mol)]
+        return []
+
     repeat_units = generate_all_connections(monomerA_smiles, monomerB_smiles)
 
     results = []
@@ -259,13 +283,16 @@ def generate_cyclized_from_monomers(
 
 # ── DataFrame operations ───────────────────────────────────────────────────
 
+
 def cyclize_df(df: pd.DataFrame) -> pd.DataFrame:
     """
     Generate cyclized structures from monomers, add cyc_1/2, mol_1/2 columns.
 
     Each polymer is built from MonomerA_{s} + MonomerB_{s} via
-    generate_cyclized_from_monomers, which may produce multiple cyclized
-    structures for asymmetric monomers.
+    generate_cyclized_from_monomers:
+      - Homocoupling (A == B): 1 structure (single monomer cyclized head-to-tail)
+      - Alternating copolymer (A != B): may produce multiple cyclized structures
+        (one per connection orientation), averaged downstream.
 
     cyc_{s} and mol_{s} columns store lists (one element per unique structure).
     """
@@ -304,6 +331,17 @@ def load_and_preprocess(csv_path: str) -> pd.DataFrame:
     df = pd.read_csv(csv_path)
     df = cyclize_df(df)
 
+    # extra_feat() imputes NaN with 0, which is a physically meaningful value
+    # for E_LUMO / E_HOMO -- make the imputation visible instead of silent
+    for suffix in ("1", "2"):
+        for col in (f"E_LUMO (eV)_{suffix}", f"E_HOMO (eV)_{suffix}"):
+            if col in df.columns:
+                n_missing = int(df[col].isna().sum())
+                if n_missing:
+                    logger.warning(
+                        "%s has %d/%d missing values; they are imputed with 0.0 "
+                        "before standardization", col, n_missing, len(df))
+
     target_raw = [f"{t}_{s}" for t in TASK_NAMES for s in ("1", "2")]
 
     mask = df["mol_1"].apply(len) > 0
@@ -323,8 +361,7 @@ def load_and_preprocess(csv_path: str) -> pd.DataFrame:
         both = df[f"ok_{t}_1"] & df[f"ok_{t}_2"]
         logger.info(
             f"{t}: {int(both.sum())}/{len(df)} pairs ({100 * both.mean():.1f}%) "
-            f"have both mobilities measured"
-        )
+            f"have both mobilities measured")
 
     logger.info(f"Preprocessed dataset: {len(df)} valid pairs")
     return df

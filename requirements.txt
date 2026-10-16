@@ -1,0 +1,12 @@
+# Minimal runtime requirements for ofet_sidechain_mask.
+# The fully pinned development environment is in environment.yaml.
+python>=3.10
+torch>=2.0
+chemprop>=2.0.0,<2.4
+rdkit>=2024.3.1
+pandas>=2.0
+numpy>=1.24
+scikit-learn>=1.3
+scipy>=1.10
+safetensors>=0.4
+pillow>=10.0        # draw_molecules.py only

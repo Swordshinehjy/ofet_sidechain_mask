@@ -41,20 +41,28 @@ class WeightedBondMessagePassing(BondMessagePassing):
         self.sp3_weight = sp3_weight
 
     def _edge_weights(self, bmg: BatchMolGraph) -> Tensor:
-        return compute_edge_weights(bmg.V, bmg.edge_index, bmg.E, self.sp3_weight)
+        return compute_edge_weights(bmg.V, bmg.edge_index, bmg.E,
+                                    self.sp3_weight)
 
-    def message(self, H: Tensor, bmg: BatchMolGraph, edge_weights: Tensor) -> Tensor:
+    def message(self, H: Tensor, bmg: BatchMolGraph,
+                edge_weights: Tensor) -> Tensor:
         H_w = H * edge_weights.unsqueeze(1)
         index_torch = bmg.edge_index[1].unsqueeze(1).repeat(1, H.shape[1])
-        M_all = torch.zeros(
-            len(bmg.V), H.shape[1], dtype=H.dtype, device=H.device
-        ).scatter_reduce_(0, index_torch, H_w, reduce="sum", include_self=False)[
-            bmg.edge_index[0]
-        ]
+        M_all = torch.zeros(len(bmg.V),
+                            H.shape[1],
+                            dtype=H.dtype,
+                            device=H.device).scatter_reduce_(
+                                0,
+                                index_torch,
+                                H_w,
+                                reduce="sum",
+                                include_self=False)[bmg.edge_index[0]]
         M_rev = H_w[bmg.rev_edge_index]
         return M_all - M_rev
 
-    def forward(self, bmg: BatchMolGraph, V_d: Optional[Tensor] = None) -> Tensor:
+    def forward(self,
+                bmg: BatchMolGraph,
+                V_d: Optional[Tensor] = None) -> Tensor:
         # Compute edge weights BEFORE graph_transform so that one-hot
         # comparisons (e.g. V[:, SP3_IDX] == 1.0) are not broken by scaling.
         edge_weights = self._edge_weights(bmg)
@@ -71,9 +79,12 @@ class WeightedBondMessagePassing(BondMessagePassing):
         # final per-atom aggregation, also weighted
         H_final = H * edge_weights.unsqueeze(1)
         index_torch = bmg.edge_index[1].unsqueeze(1).repeat(1, H.shape[1])
-        M = torch.zeros(
-            len(bmg.V), H.shape[1], dtype=H.dtype, device=H.device
-        ).scatter_reduce_(0, index_torch, H_final, reduce="sum", include_self=False)
+        M = torch.zeros(len(bmg.V), H.shape[1], dtype=H.dtype,
+                        device=H.device).scatter_reduce_(0,
+                                                         index_torch,
+                                                         H_final,
+                                                         reduce="sum",
+                                                         include_self=False)
         return self.finalize(M, bmg.V, V_d)
 
 
@@ -150,9 +161,10 @@ class PolymerRankingModel(nn.Module):
         sp3_weight: float = 0.2,
     ):
         super().__init__()
-        self.mpnn = DMPNNEncoder(
-            hidden_size, depth, aggregation, sp3_weight=sp3_weight
-        )
+        self.mpnn = DMPNNEncoder(hidden_size,
+                                 depth,
+                                 aggregation,
+                                 sp3_weight=sp3_weight)
 
         ffn_in = hidden_size + extra_dim
         self.ffn = nn.Sequential(

@@ -30,11 +30,10 @@ Results are written to ``hyperparam_search.csv`` and ``best_hyperparams.json``.
 from __future__ import annotations
 
 import argparse
-import itertools
 import json
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -193,6 +192,7 @@ def search(
     seed: int = 42,
     sp3_weight: float = 0.2,
     verbose: bool = False,
+    split_method: str = "random",
 ) -> List[Dict[str, Any]]:
     """Random search; returns one record per trial sorted by validation accuracy."""
     rng = random.Random(seed)
@@ -217,6 +217,7 @@ def search(
             seed=seed,
             rank_weight=alpha,
             reg_weight=beta,
+            split_method=split_method,
         )
         out = run_experiment(df, mcfg, tcfg, max_epochs=max_epochs, verbose=verbose)
         vm = out["val_metrics"]
@@ -238,7 +239,8 @@ def search(
             "val_mu_h_rho": round(vm.get("mu_h_spearman", 0.0), 4),
             "best_epoch": out["best_epoch"],
             "n_params": out["n_params"],
-            "delta_scale": round(out["delta_scale"], 3),
+            "split_method": split_method,
+            "delta_scale": [round(float(v), 3) for v in out["delta_scale"]],
         }
         results.append(rec)
         print(f"[trial {i:2d}/{n_trials}] val_acc={rec['val_mean_acc']:.3f} "
@@ -260,6 +262,7 @@ def ablation(
     max_epochs: int = 40,
     patience: int = 15,
     seed: int = 42,
+    split_method: str = "random",
 ) -> List[Dict[str, Any]]:
     """Sweep sp3_weight with everything else fixed."""
     out: List[Dict[str, Any]] = []
@@ -280,6 +283,7 @@ def ablation(
             seed=seed,
             rank_weight=base["rank_weight"],
             reg_weight=base["reg_weight"],
+            split_method=split_method,
         )
         res = run_experiment(df, mcfg, tcfg, max_epochs=max_epochs)
         vm = res["val_metrics"]
@@ -306,8 +310,10 @@ def recommend(
 ) -> Dict[str, Any]:
     """Combine search / ablation output into one recommended configuration."""
     best = dict(search_results[0]) if search_results else {}
-    delta_scale = max(
-        report.get("mu_e_delta_std", 1.0), report.get("mu_h_delta_std", 1.0), 1e-3)
+    # per-task scale, in TASK_NAMES order (mu_e, mu_h)
+    delta_scale = [
+        max(report.get(f"{t}_delta_std", 1.0) or 1.0, 1e-3) for t in TASKS
+    ]
 
     sp3 = 0.2
     if ablation_results:
@@ -324,7 +330,8 @@ def recommend(
         "batch_size": best.get("batch_size", 32),
         "rank_weight": best.get("rank_weight", 0.8),
         "reg_weight": best.get("reg_weight", 0.2),
-        "delta_scale": round(float(delta_scale), 3),
+        "delta_scale": [round(float(v), 3) for v in delta_scale],
+        "split_method": best.get("split_method", "random"),
         "epochs": 200,
         "patience": 30,
         "early_stop_metric": "pair_acc",
@@ -348,7 +355,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--ablation_weights", type=float, nargs="*",
                    default=[0.2, 0.4, 0.6, 0.8, 1.0])
+    p.add_argument(
+        "--split_method", choices=["random", "group"], default="random",
+        help="Split used by every trial. 'group' (split by paper/doi) gives an "
+        "honest but much lower validation score; 'random' re-uses materials "
+        "across train/val (leaky, and the current default)")
     p.add_argument("--out_csv", type=str, default="hyperparam_search.csv")
+    p.add_argument("--out_ablation_csv", type=str,
+                   default="hyperparam_ablation.csv")
     p.add_argument("--out_json", type=str, default="best_hyperparams.json")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args()
@@ -372,6 +386,7 @@ def main() -> int:
         search_results = search(
             df, n_trials=args.n_trials, max_epochs=args.max_epochs,
             patience=args.patience, seed=args.seed, verbose=args.verbose,
+            split_method=args.split_method,
         )
         pd.DataFrame(search_results).to_csv(args.out_csv, index=False)
         print(f"\nSearch results -> {args.out_csv}")
@@ -387,8 +402,11 @@ def main() -> int:
         ablation_results = ablation(
             df, list(args.ablation_weights), base,
             max_epochs=args.max_epochs, patience=args.patience, seed=args.seed,
+            split_method=args.split_method,
         )
+        pd.DataFrame(ablation_results).to_csv(args.out_ablation_csv, index=False)
         print(pd.DataFrame(ablation_results).to_string(index=False))
+        print(f"\nAblation results -> {args.out_ablation_csv}")
 
     if args.stage == "analyze":
         return 0
@@ -407,9 +425,11 @@ def main() -> int:
     print(f"      --sp3_weight {rec['sp3_weight']} --lr {rec['lr']} "
           f"--batch_size {rec['batch_size']} \\")
     print(f"      --rank_weight {rec['rank_weight']} --reg_weight {rec['reg_weight']} "
-          f"--delta_scale {rec['delta_scale']} \\")
-    print(f"      --epochs {rec['epochs']} --patience {rec['patience']} "
-          f"--early_stop_metric {rec['early_stop_metric']} --scheduler {rec['scheduler']}")
+          f"--delta_scale {' '.join(str(v) for v in rec['delta_scale'])} \\")
+    print(f"      --split_method {rec['split_method']} "
+          f"--epochs {rec['epochs']} --patience {rec['patience']} \\")
+    print(f"      --early_stop_metric {rec['early_stop_metric']} "
+          f"--scheduler {rec['scheduler']}")
     return 0
 
 

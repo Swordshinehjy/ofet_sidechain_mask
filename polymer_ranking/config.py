@@ -1,7 +1,7 @@
 """Constants and configuration dataclasses."""
 
-from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, Optional
+from dataclasses import dataclass, asdict
+from typing import Dict, Any, List, Optional, Sequence, Union
 
 # Constants
 EXTRA_COLS = [
@@ -20,11 +20,12 @@ CP_FEATURE_DIM = 1
 # Configuration dataclasses
 @dataclass
 class ModelConfig:
-    """Model architecture configuration
+    """Model architecture configuration.
 
-    Defaults are sized for the group (doi) split: with ~1.3k training pairs a
-    256/6 model (~215k params) memorizes the training papers (val loss rises
-    after ~epoch 20), so the default is a ~65k-param model with more dropout.
+    Defaults are the large configuration (~215k parameters). For the honest
+    group (doi) split, where only ~1.3k training pairs are available, a smaller
+    model (e.g. ``hidden_size=128, depth=4, dropout=0.2``, ~65k params) is
+    usually the better starting point -- see ``hyperparam_search.py``.
     """
     hidden_size: int = 256
     depth: int = 6
@@ -49,7 +50,7 @@ class ModelConfig:
 @dataclass
 class TrainingConfig:
     """Training configuration"""
-    csv_path: str = "contrastive_paired.csv"
+    csv_path: str = "contrastive_full_paired.csv"
     save_dir: str = "checkpoints"
     epochs: int = 200
     batch_size: int = 32
@@ -60,7 +61,7 @@ class TrainingConfig:
     test_ratio: float = 0.1
     # "random": pair-level random split; "group": split by paper (doi), so pairs
     # from the same study never cross train/val/test (no paper-level leakage)
-    split_method: str = "random"          # "random" | "group"
+    split_method: str = "random"  # "random" | "group"
     seed: int = 42
     # loss weighting: the ranking term is the actual objective, the delta
     # regression term is only a regularizer on the score scale
@@ -69,15 +70,20 @@ class TrainingConfig:
     # BPR weight of pairs containing a censored value (mobility = 0, i.e. below
     # the detection limit): the direction is known, the magnitude is not
     censored_weight: float = 0.5
-    # scale of the regression target; None -> estimated from the training set
-    delta_scale: Optional[float] = None
+    # Scale of the regression target. ``None`` -> estimated per task from the
+    # training set (std of the measured log10 differences). A single float is
+    # broadcast to every task; a sequence must have one entry per task
+    # (order of ``TASK_NAMES``: mu_e, mu_h), because the two tasks have
+    # noticeably different delta spreads (≈0.97 vs ≈1.13 on the current data).
+    delta_scale: Optional[Union[float, Sequence[float]]] = None
     # what early stopping / LR scheduling monitor
-    early_stop_metric: str = "pair_acc"   # "pair_acc" | "loss"
-    scheduler: str = "plateau"            # "plateau" | "cosine"
+    early_stop_metric: str = "pair_acc"  # "pair_acc" | "loss"
+    scheduler: str = "plateau"  # "plateau" | "cosine"
 
     def __post_init__(self):
         if not 0 < self.test_ratio < 1:
-            raise ValueError(f"test_ratio must be in (0, 1), got {self.test_ratio}")
+            raise ValueError(
+                f"test_ratio must be in (0, 1), got {self.test_ratio}")
         if not 0 <= self.val_ratio < 1 - self.test_ratio:
             raise ValueError(
                 f"val_ratio must be in [0, {1 - self.test_ratio:.2f}), got {self.val_ratio}"
@@ -99,7 +105,7 @@ class TrainingConfig:
 @dataclass
 class FinetuneConfig:
     """Fine-tuning configuration"""
-    csv_path: str = "contrastive_paired.csv"
+    csv_path: str = "contrastive_full_paired.csv"
     checkpoint_path: str = "checkpoints/best_model.safetensors"
     save_dir: str = "checkpoints"
     finetune_epochs: int = 20
@@ -110,6 +116,11 @@ class FinetuneConfig:
     # hold out a validation split so fine-tuning is monitored instead of blind
     val_ratio: float = 0.1
     patience: int = 10
+    # loss weights; defaults match the values used when the checkpoint was
+    # trained (they are also read back from the checkpoint metadata)
+    rank_weight: float = 0.8
+    reg_weight: float = 0.2
+    censored_weight: float = 0.5
 
 
 @dataclass

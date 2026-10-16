@@ -9,7 +9,11 @@
   "batch_size": 32,
   "rank_weight": 0.8,
   "reg_weight": 0.2,
-  "delta_scale": 1.132,
+  "delta_scale": [
+    0.969,
+    1.13
+  ],
+  "split_method": "random",
   "epochs": 200,
   "patience": 30,
   "early_stop_metric": "pair_acc",

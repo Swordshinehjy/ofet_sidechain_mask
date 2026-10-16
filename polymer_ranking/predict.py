@@ -1,7 +1,7 @@
 """Prediction logic: checkpoint loading, single pair prediction, batch prediction."""
 
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
@@ -61,7 +61,8 @@ def predict_pair(
     results2 = generate_cyclized_from_monomers(monomerA_2, monomerB_2)
     if not results1 or not results2:
         raise ValueError(
-            "Monomer concatenation/cyclization failed, check SMILES format and * count")
+            "Monomer concatenation/cyclization failed, check SMILES format and * count"
+        )
 
     g1s = [featurizer(mol) for _, mol in results1]
     g2s = [featurizer(mol) for _, mol in results2]
@@ -125,6 +126,15 @@ def predict_batch(
     valid_mask &= df["mol_2"].apply(len) > 0
     valid = df[valid_mask].copy().reset_index(drop=True)
     logger.info(f"Valid pairs: {len(valid)}/{len(df)}")
+
+    # `preferred_*` needs the material names; fall back to a generic label
+    # instead of crashing with a bare KeyError when the columns are absent
+    missing = [c for c in ("Materials_1", "Materials_2") if c not in valid.columns]
+    if missing:
+        logger.warning("%s not found in the input CSV; using 'polymer_1' / "
+                       "'polymer_2' as labels", ", ".join(missing))
+        valid["Materials_1"] = "polymer_1"
+        valid["Materials_2"] = "polymer_2"
 
     ef1 = scaler.transform(extra_feat(valid, "1"))
     ef2 = scaler.transform(extra_feat(valid, "2"))

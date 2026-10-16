@@ -69,13 +69,17 @@ class _BasePairDataset(Dataset):
         self.ef1 = self.scaler.transform(ef1) if self.scaler else ef1
         self.ef2 = self.scaler.transform(ef2) if self.scaler else ef2
 
-        self.y1 = self.df[[f"log_{t}_1" for t in TASK_NAMES]].values.astype(np.float32)
-        self.y2 = self.df[[f"log_{t}_2" for t in TASK_NAMES]].values.astype(np.float32)
+        self.y1 = self.df[[f"log_{t}_1"
+                           for t in TASK_NAMES]].values.astype(np.float32)
+        self.y2 = self.df[[f"log_{t}_2"
+                           for t in TASK_NAMES]].values.astype(np.float32)
 
         # Validity flags: a mobility of 0 means "not measured", such targets must
         # be masked out of both the loss and the metrics.
-        self.ok1 = self.df[[f"ok_{t}_1" for t in TASK_NAMES]].values.astype(bool)
-        self.ok2 = self.df[[f"ok_{t}_2" for t in TASK_NAMES]].values.astype(bool)
+        self.ok1 = self.df[[f"ok_{t}_1"
+                            for t in TASK_NAMES]].values.astype(bool)
+        self.ok2 = self.df[[f"ok_{t}_2"
+                            for t in TASK_NAMES]].values.astype(bool)
 
     def _ensure_featurized(self):
         if self._graphs1 is not None:
@@ -206,8 +210,8 @@ class CachedPairDataset(_BasePairDataset):
             ok2_batch = torch.tensor(self.ok2[batch_indices])
 
             self._cached_batches.append(
-                (bmg1, n1s, bmg2, n2s, ef1_batch, ef2_batch,
-                 y1_batch, y2_batch, ok1_batch, ok2_batch))
+                (bmg1, n1s, bmg2, n2s, ef1_batch, ef2_batch, y1_batch,
+                 y2_batch, ok1_batch, ok2_batch))
 
         self._graphs1 = None
         self._graphs2 = None
@@ -227,5 +231,4 @@ def collate_cached_batch(batch):
         return batch[0]
     raise ValueError(
         "CachedPairDataset should be used with DataLoader batch_size=1. "
-        "Got batch_size > 1, which requires complex merging of group sizes."
-    )
+        "Got batch_size > 1, which requires complex merging of group sizes.")

@@ -53,7 +53,7 @@ class CustomMultiHotAtomFeaturizer(MultiHotAtomFeaturizer):
         return np.append(base, is_cp).astype(np.float32)
 
     def __len__(self) -> int:
-        return super().__len__() + 1
+        return super().__len__() + CP_FEATURE_DIM
 
 
 def create_featurizer() -> SimpleMoleculeMolGraphFeaturizer:
@@ -72,6 +72,7 @@ def get_feature_dims():
 
 
 # ── Edge weights for non-ring sp3-carbon down-weighting ─────────────────────
+
 
 def _compute_sp3_carbon_indices():
     """Probe CustomMultiHotAtomFeaturizer to find feature indices for carbon
@@ -117,8 +118,30 @@ def _compute_bond_in_ring_idx():
     return 2 + len(bf.bond_types)
 
 
+def _compute_halogen_indices():
+    """Probe CustomMultiHotAtomFeaturizer for the F/Cl/Br/I atomic-number slots.
+
+    Used by compute_edge_weights to detect halogen-substituted sp3 carbons
+    (CF3, OCF3, SCF3, CH2Cl, ...), which must stay on the main chain.
+    """
+    feat = CustomMultiHotAtomFeaturizer()
+    offset = 0
+    idxs = []
+    for i, sf in enumerate(feat._subfeats):
+        if i == 0:  # atomic_nums
+            for z in (9, 17, 35, 53):  # F, Cl, Br, I
+                pos = sf.get(z, -1)
+                if pos >= 0:
+                    idxs.append(offset + pos)
+        offset += len(sf) + 1  # +1 for unknown-pad slot
+    if not idxs:
+        raise RuntimeError("Could not determine halogen feature indices")
+    return idxs
+
+
 _ATOM_CARBON_IDX, _HYBRID_SP3_IDX = _compute_sp3_carbon_indices()
 _BOND_IN_RING_IDX = _compute_bond_in_ring_idx()
+_ATOM_HALOGEN_IDXS = _compute_halogen_indices()
 
 
 def compute_edge_weights(
@@ -133,8 +156,11 @@ def compute_edge_weights(
     side chains (e.g. alkyl groups) that have minimal influence on charge mobility —
     receive weight ``sp3_weight`` (default 0.2). sp3 carbons that are part of a ring
     (e.g. cyclohexane fused to an aromatic system) are NOT down-weighted, since they
-    belong to the main structural backbone. All other edges receive weight 1.0.
-    Both directed edges of a given bond share the same weight.
+    belong to the main structural backbone. sp3 carbons bonded to a halogen
+    (CF3, OCF3, SCF3, CH2Cl, ...) are also NOT down-weighted: their C–X bonds
+    carry a strong inductive effect on the frontier energy levels (HOMO/LUMO),
+    so these substituents must stay on the main chain. All other edges receive
+    weight 1.0. Both directed edges of a given bond share the same weight.
 
     Parameters
     ----------
@@ -145,7 +171,8 @@ def compute_edge_weights(
     E : Tensor [num_edges, bond_fdim]
         Bond feature matrix (``BatchMolGraph.E``); used to detect ring membership.
     sp3_weight : float, default 0.2
-        Weight applied to edges whose source or destination atom is a non-ring sp3 carbon.
+        Weight applied to edges whose source or destination atom is a non-ring
+        sp3 carbon without halogen substituents.
 
     Returns
     -------
@@ -165,8 +192,19 @@ def compute_edge_weights(
     atom_in_ring[edge_index[0][edge_in_ring]] = True
     atom_in_ring[edge_index[1][edge_in_ring]] = True
 
-    # Only non-ring sp3 carbons (side chains) should be down-weighted
-    is_sidechain_sp3 = is_sp3_carbon & ~atom_in_ring
+    # sp3 carbons with a halogen neighbor (CF3, OCF3, SCF3, CH2Cl, ...) are
+    # energy-level-relevant substituents, not inert side chains -> keep them
+    # on the main chain. scatter_add_ over both edge directions accumulates
+    # every neighbor (safe under duplicate indices, unlike buffered |=).
+    is_halogen = (V[:, _ATOM_HALOGEN_IDXS] == 1.0).any(dim=1)
+    has_halog_nbr = torch.zeros(num_atoms, dtype=V.dtype, device=V.device)
+    has_halog_nbr.scatter_add_(0, edge_index[0],
+                               is_halogen[edge_index[1]].to(V.dtype))
+    has_halog_nbr.scatter_add_(0, edge_index[1],
+                               is_halogen[edge_index[0]].to(V.dtype))
+
+    # Only non-ring, halogen-free sp3 carbons (alkyl side chains) are down-weighted
+    is_sidechain_sp3 = is_sp3_carbon & ~atom_in_ring & (has_halog_nbr == 0)
 
     src = edge_index[0]
     dst = edge_index[1]

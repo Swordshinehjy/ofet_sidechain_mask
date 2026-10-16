@@ -14,15 +14,25 @@ import logging
 from .config import EXTRA_COLS, EXTRA_DIM, TASK_NAMES, NUM_TASKS, CP_FEATURE_DIM, ModelConfig, TrainingConfig, FinetuneConfig, PredictConfig
 from .featurizer import CustomMultiHotAtomFeaturizer, create_featurizer, get_feature_dims
 from .chemistry import (
-    normalize_smiles, get_star_info, connect_at_stars, generate_all_connections,
-    cyclize_polymer_with_cp_marking, generate_cyclized_from_monomers,
-    cyclize_df, extra_feat, load_and_preprocess,
+    normalize_smiles,
+    get_star_info,
+    connect_at_stars,
+    generate_all_connections,
+    cyclize_polymer_with_cp_marking,
+    generate_cyclized_from_monomers,
+    is_homocoupling,
+    cyclize_df,
+    extra_feat,
+    load_and_preprocess,
 )
 from .dataset import PairDataset, CachedPairDataset, collate_fn, collate_cached_batch
 from .model import DMPNNEncoder, PolymerRankingModel
 from .loss import MultiTaskBayesianRankingLoss
-from .training import EarlyStopping, train, finetune
-from .predict import load_checkpoint, predict_pair, predict_batch
+from .training import (EarlyStopping, compute_delta_scale, compute_delta_scales,
+                       compute_metrics, prepare_splits, run_experiment, train,
+                       finetune)
+from .checkpoint import save_checkpoint, load_checkpoint, load_checkpoint_extras
+from .predict import predict_pair, predict_batch
 from .cli import main
 
 logger = logging.getLogger(__name__)

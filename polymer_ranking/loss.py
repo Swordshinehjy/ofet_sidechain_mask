@@ -1,12 +1,38 @@
 """Loss function: MultiTaskBayesianRankingLoss (with censored-label support)."""
 
-from typing import List, Optional, Dict, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from .config import NUM_TASKS, TASK_NAMES
+
+
+def _as_scale_tensor(delta_scale: Union[float, Sequence[float]]) -> torch.Tensor:
+    """Normalize ``delta_scale`` into a per-task tensor of length ``NUM_TASKS``.
+
+    * ``None`` / ``0`` / non-positive -> 1.0 (no scaling), as before;
+    * a single float -> broadcast to every task;
+    * a sequence -> must hold exactly one value per task.
+    """
+    if delta_scale is None:
+        values = [1.0] * NUM_TASKS
+    elif isinstance(delta_scale, (int, float)):
+        v = float(delta_scale)
+        values = [v if v > 0 else 1.0] * NUM_TASKS
+    else:
+        values = [float(v) for v in delta_scale]
+        if len(values) == 1:
+            v = values[0]
+            values = [v if v > 0 else 1.0] * NUM_TASKS
+        elif len(values) != NUM_TASKS:
+            raise ValueError(
+                f"delta_scale must be a scalar or have {NUM_TASKS} entries "
+                f"(one per task {TASK_NAMES}), got {len(values)}")
+        else:
+            values = [v if v > 0 else 1.0 for v in values]
+    return torch.tensor(values, dtype=torch.float32)
 
 
 class MultiTaskBayesianRankingLoss(nn.Module):
@@ -35,7 +61,7 @@ class MultiTaskBayesianRankingLoss(nn.Module):
 
     .. math::
         L_{bpr} = -\\log \\sigma(\\text{sign}(y_1-y_2)(s_1-s_2)), \\qquad
-        L_{reg} = \\text{MSE}(s_1-s_2,\\, (y_1-y_2)/\\text{delta\\_scale})
+        L_{reg} = \\text{MSE}(s_1-s_2,\\, (y_1-y_2)/\\text{delta\\_scale}_t)
     """
 
     def __init__(
@@ -43,15 +69,21 @@ class MultiTaskBayesianRankingLoss(nn.Module):
         rank_weight: float = 0.8,
         reg_weight: float = 0.2,
         task_weights: Optional[List[float]] = None,
-        delta_scale: float = 1.0,
+        delta_scale: Union[float, Sequence[float]] = 1.0,
         censored_weight: float = 0.5,
     ):
         super().__init__()
         self.alpha = rank_weight
         self.beta = reg_weight
         self.task_w = task_weights or [1.0] * NUM_TASKS
-        self.delta_scale = float(delta_scale) if delta_scale else 1.0
         self.censored_weight = float(censored_weight)
+        # per-task scale, stored as a buffer so it follows .to(device)
+        self.register_buffer("delta_scale", _as_scale_tensor(delta_scale))
+
+    @property
+    def delta_scales(self) -> List[float]:
+        """Per-task regression scales, in ``TASK_NAMES`` order."""
+        return [float(v) for v in self.delta_scale]
 
     def forward(
         self,
@@ -81,7 +113,8 @@ class MultiTaskBayesianRankingLoss(nn.Module):
             if int(v_reg.sum()) == 0:
                 l_reg = 0.0 * diff_s.sum()
             else:
-                l_reg = F.mse_loss(diff_s[v_reg], diff_y[v_reg] / self.delta_scale)
+                l_reg = F.mse_loss(diff_s[v_reg],
+                                   diff_y[v_reg] / self.delta_scale[t])
 
             # ---- BPR: every pair with a decidable ordering ----
             if int(v_rank.sum()) == 0:
@@ -97,7 +130,8 @@ class MultiTaskBayesianRankingLoss(nn.Module):
                         torch.full_like(w, self.censored_weight),
                         w,
                     )
-                l_bpr = (F.softplus(-dy.sign() * ds) * w).sum() / w.sum().clamp(min=1e-6)
+                l_bpr = (F.softplus(-dy.sign() * ds) *
+                         w).sum() / w.sum().clamp(min=1e-6)
 
             task_losses.append(lam * (self.alpha * l_bpr + self.beta * l_reg))
             log[f"{name}_bpr"] = float(l_bpr.item())

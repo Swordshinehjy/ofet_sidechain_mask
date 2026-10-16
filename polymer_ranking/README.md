@@ -39,14 +39,13 @@ MonomerA + MonomerB (with * markers)
 
 ## Requirements
 
-- Python >= 3.9
-- PyTorch
-- chemprop >= 2.0.0
+- Python >= 3.10 (verified on 3.13)
+- PyTorch >= 2.0
+- chemprop >= 2.0.0 (verified against 2.3.1)
 - RDKit
-- scikit-learn
-- scipy
-- pandas
-- numpy
+- scikit-learn, scipy, pandas, numpy, safetensors
+
+See `requirements.txt` / `environment.yaml` at the project root.
 
 ## Data Format
 
@@ -69,12 +68,9 @@ The training CSV must contain the following columns (`_1` / `_2` suffixes distin
 
 ### Data Preprocessing
 
-`preprocess.py` groups the raw monomer data by DOI and generates paired data:
-
-```bash
-python preprocess.py
-# reads contrastive_monomer.csv → writes contrastive_monomer_paired.csv
-```
+No separate step is needed: monomer concatenation and cyclization run inside
+`load_and_preprocess()` when the paired CSV is read. Rows whose monomers cannot be
+concatenated/cyclized, or whose mobility targets are missing, are dropped (and logged).
 
 ## Usage
 
@@ -100,12 +96,18 @@ Optional arguments:
 | `--reg_weight` | 0.2 | Weight beta of the delta regression term |
 | `--delta_scale` | auto | Scale of the regression target (std of the measured log10 differences) |
 | `--early_stop_metric` | pair_acc | Quantity monitored by early stopping (`pair_acc` / `loss`) |
+| `--sp3_weight` | 0.2 | Message passing weight of edges touching non-ring sp3 carbons |
+| `--censored_weight` | 0.5 | BPR weight of pairs containing a censored value |
+| `--aggregation` | mean | Atom aggregation (`mean` / `sum` / `norm`) |
+| `--split_method` | random | `random` (leaky) or `group` (split by `doi`) |
 | `--scheduler` | plateau | LR scheduler (`plateau` / `cosine`) |
 | `--patience` | 30 | Early stopping patience |
 | `--val_ratio` | 0.1 | Validation set ratio |
 | `--test_ratio` | 0.1 | Test set ratio |
 | `--seed` | 42 | Random seed |
 | `--save_dir` | checkpoints | Checkpoint directory |
+| `--hyperparams` | best_hyperparams.json | Tuned hyper-parameters, auto-loaded when present |
+| `--log_file` | result.log | Log file path |
 
 ### Fine-tuning
 
@@ -167,12 +169,15 @@ For each task t in {mu_e, mu_h}:
 - **BPR ranking loss**: `L_bpr = -log(sigma(sign(y1 - y2) · (s1 - s2)))`, maximizing the log-likelihood of the correct ranking.
 - **Delta regression loss**: `L_reg = MSE(s1 - s2, y1 - y2)`, forcing the score difference to match the true difference.
 
-Total loss = sum_t lambda_t · (alpha · L_bpr_t + beta · L_reg_t), with alpha=0.6 and beta=0.4 by default.
+Total loss = sum_t lambda_t · (alpha · L_bpr_t + beta · L_reg_t), with alpha=0.8 and beta=0.2 by
+default (`--rank_weight` / `--reg_weight`). The regression target is divided by a per-task
+`delta_scale` (std of the measured log10 differences, estimated on the training split).
 
 ## Metrics
 
 | Metric | Description |
 |--------|-------------|
-| `{task}_pair_acc` | Pairwise ranking accuracy |
-| `{task}_spearman` | Spearman rank correlation coefficient |
+| `{task}_pair_acc` | Pairwise ranking accuracy (on ordering-decidable pairs) |
+| `{task}_spearman` | Spearman correlation between the predicted and true **difference** (`s1-s2` vs `y1-y2`, on pairs with two measured values) |
 | `{task}_avg_prob` | Average ranking confidence |
+| `mean_pair_acc` | Sample-weighted mean of the two `pair_acc` values — the early-stopping monitor |
