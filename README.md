@@ -4,13 +4,24 @@ Ranking model for polymer carrier mobility based on a D-MPNN (Directed Message P
 
 ## Workflow
 
-```
-Monomer A + Monomer B ──► monomer concatenation (repeat unit) ──► cyclization (cyclic model compound) ──► D-MPNN encoding ──► FFN ──► ranking score
-                                                                        │
-                                            extra features (conjugation, isomer, symmetry, LUMO, HOMO) ──┘
-                                              │
-                                              ▼
-                                    edge weights (sp3 C down-weighted to 0.2, others 1.0)
+```mermaid
+flowchart LR
+    A[Monomer A + Monomer B] --> B[Monomer Concatenation<br/>repeat unit]
+    B --> C[Cyclization<br/>cyclic model compound]
+    C --> D[D-MPNN Encoding<br/>with Edge Weights]
+    D --> E[FFN]
+    E --> F[Ranking Score]
+    G[Extra Features<br/>conjugation, isomer,<br/>symmetry, LUMO, HOMO] --> D
+    H[Edge Weights<br/>sp3 C down-weighted to 0.2<br/>others 1.0] --> D
+
+    style A fill:#fff3cd,stroke:#ffc107,stroke-width:2px,color:#000
+    style B fill:#d1ecf1,stroke:#17a2b8,stroke-width:2px,color:#000
+    style C fill:#d1ecf1,stroke:#17a2b8,stroke-width:2px,color:#000
+    style D fill:#d4edda,stroke:#28a745,stroke-width:2px,color:#000
+    style E fill:#d4edda,stroke:#28a745,stroke-width:2px,color:#000
+    style F fill:#f8d7da,stroke:#dc3545,stroke-width:2px,color:#000
+    style G fill:#e2e3e5,stroke:#6c757d,stroke-width:2px,color:#000
+    style H fill:#fce5cd,stroke:#fd7e14,stroke-width:2px,color:#000
 ```
 
 1. **Monomer concatenation**: two monomers (containing `*` markers) are joined through their `*` atoms to build the polymer repeat unit. For asymmetric monomers all possible connection orientations are generated automatically.
